@@ -1,0 +1,5 @@
+# torch est installe a part par setup.ps1 (index CUDA 12.8)
+# L'audio est decode par FFmpeg (pas par PyAV) : on passe un tableau numpy a faster-whisper
+faster-whisper
+opencv-python
+numpy

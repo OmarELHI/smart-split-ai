@@ -1,0 +1,17 @@
+# Videos (enregistrements et extraits de test)
+*.mp4
+*.mkv
+*.mov
+*.wav
+
+# Donnees locales : modeles, caches, sorties
+data/
+
+# Python
+engine/.venv/
+__pycache__/
+*.pyc
+
+# Node / Electron (Jalon C)
+node_modules/
+dist/
