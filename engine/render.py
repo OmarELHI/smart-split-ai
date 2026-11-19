@@ -4,6 +4,7 @@ Exemples (depuis D:\\Logiciels\\Smart Split) :
   python engine\\render.py "2026-11-19 16-18-24.mp4" --start 60 --end 90 --scene cam_jeu
   python engine\\render.py "2026-11-19 16-18-24.mp4" --start 60 --scene cam_jeu --game-ratio 1:1 --preview
   python engine\\render.py "2026-11-19 16-11-36.mp4" --start 30 --end 50 --scene full_cam --face-x 0.6
+  python engine\\render.py "2026-11-19 16-11-36.mp4" --start 0 --end 40 --scene full_cam   (suivi du visage)
   python engine\\render.py "2026-11-19 16-18-24.mp4" --demo
   python engine\\render.py "2026-11-19 16-11-36.mp4" --start 100 --end 160 --auto
 """
@@ -31,7 +32,8 @@ def main() -> None:
     ap.add_argument("--end", type=float, default=30, help="fin en secondes")
     ap.add_argument("--scene", choices=[s.value for s in Scene], default=Scene.CAM_JEU.value)
     ap.add_argument("--cam", help="zone de la cam x,y,w,h (pixels ou relatif). Par defaut : en haut a droite")
-    ap.add_argument("--face-x", type=float, default=0.5, help="full cam : position horizontale du visage (0 a 1)")
+    ap.add_argument("--face-x", type=lambda v: v if v == "auto" else float(v), default="auto",
+                    help="full cam : 'auto' (suivi du visage, par defaut) ou position fixe de 0 a 1")
     ap.add_argument("--game-ratio", type=ratio, default=GAME_RATIO, help="cam + jeu : ratio de la zone jeu (1:1, 4:3, 16:9)")
     ap.add_argument("--bottom-margin", type=float, default=BOTTOM_MARGIN, help="cam + jeu : espace flou sous le jeu (0 a 0.3)")
     ap.add_argument("--preview", action="store_true", help="produit une image PNG au lieu d'une video")

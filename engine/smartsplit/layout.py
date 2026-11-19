@@ -72,7 +72,7 @@ _INTERNAL = ("s0", "s1", "s2", "bg", "cam", "game", "t", "a", "b")
 
 
 def build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect | None = CAM_TOP_RIGHT,
-                 face_x: float = 0.5, game_ratio: float = GAME_RATIO,
+                 face_x: float | str = 0.5, game_ratio: float = GAME_RATIO,
                  bottom_margin: float = BOTTOM_MARGIN, inp: str = "0:v", out: str = "v", tag: str = "") -> str:
     """Filtre FFmpeg qui lit [inp] et produit l'image 1080x1920 dans [out]."""
     f = _build_filter(scene, src_w, src_h, cam or CAM_TOP_RIGHT, face_x, game_ratio, bottom_margin)
@@ -81,7 +81,7 @@ def build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect | None = CAM_TO
     return f.replace("[0:v]", f"[{inp}]").replace("[v]", f"[{out}]")
 
 
-def _build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect, face_x: float,
+def _build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect, face_x: float | str,
                   game_ratio: float, bottom_margin: float) -> str:
     if scene is Scene.CAM_JEU:
         cam_h = _even(OUT_H * CAM_SHARE)                   # 596 px
@@ -108,10 +108,27 @@ def _build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect, face_x: float
         gw, gx = _center_crop_width(src_w, src_h, OUT_W / OUT_H)
         return f"[0:v]crop={gw}:{src_h}:{gx}:0,scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1[v]"
     if scene is Scene.FULL_CAM:
-        # face_x : position horizontale du visage (0 a 1). Le suivi automatique arrive a l'etape 3.
-        fw, fx = _center_crop_width(src_w, src_h, OUT_W / OUT_H, face_x)
-        return f"[0:v]crop={fw}:{src_h}:{fx}:0,scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1[v]"
+        # face_x : position fixe du visage (0 a 1) ou expression FFmpeg du suivi (etape 3)
+        if isinstance(face_x, str):
+            fw, _ = _center_crop_width(src_w, src_h, OUT_W / OUT_H)
+            x = f"'{face_x}'"
+        else:
+            fw, x = _center_crop_width(src_w, src_h, OUT_W / OUT_H, face_x)
+        return f"[0:v]crop=w={fw}:h={src_h}:x={x}:y=0,scale={OUT_W}:{OUT_H}:flags=lanczos,setsar=1[v]"
     raise ValueError(scene)
+
+
+def _face_x(src: Path, start: float, end: float, src_w: int, src_h: int, face_x):
+    """face_x = "auto" : suivi du visage sur [start, end] ; repli au centre si impossible."""
+    if face_x != "auto":
+        return face_x
+    try:
+        from .face import face_crop_expr
+        fw, _ = _center_crop_width(src_w, src_h, OUT_W / OUT_H)
+        return face_crop_expr(src, start, end, src_w, fw)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [suivi du visage indisponible, cadrage centre] {e}")
+        return 0.5
 
 
 def _codec(encoder: str) -> tuple[list[str], list[str]]:
@@ -121,12 +138,14 @@ def _codec(encoder: str) -> tuple[list[str], list[str]]:
 
 
 def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
-                cam: Rect = CAM_TOP_RIGHT, face_x: float = 0.5, encoder: str = "h264_nvenc",
+                cam: Rect = CAM_TOP_RIGHT, face_x: float | str = 0.5, encoder: str = "h264_nvenc",
                 game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN) -> Path:
     """Rend le passage [start, end] de la source en clip vertical MP4."""
     info = probe(src)
     if not 0 <= start < end <= info["duration"] + 0.01:
         raise ValueError(f"intervalle {start}-{end} hors de la video ({info['duration']:.1f} s)")
+    if scene is Scene.FULL_CAM:
+        face_x = _face_x(src, start, end, info["width"], info["height"], face_x)
     vf = build_filter(scene, info["width"], info["height"], cam, face_x, game_ratio, bottom_margin)
     # Le decodage GPU sort du NV12, que certains filtres (flou) lisent mal : on repasse en yuv420p
     vf = vf.replace("[0:v]", "[0:v]format=yuv420p,", 1)
@@ -151,7 +170,7 @@ def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
 
 
 def render_segments(src: Path, start: float, end: float, pieces: list, out: Path,
-                    face_x: float = 0.5, encoder: str = "h264_nvenc",
+                    face_x: float | str = 0.5, encoder: str = "h264_nvenc",
                     game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN) -> Path:
     """Rend [start, end] en changeant de mise en page a chaque changement de scene.
 
@@ -168,7 +187,8 @@ def render_segments(src: Path, start: float, end: float, pieces: list, out: Path
     parts = [f"[0:v]format=yuv420p,split={k}" + "".join(f"[i{n}]" for n in range(k)) + ";"]
     for n, (a, b, scene, cam) in enumerate(pieces):
         parts.append(f"[i{n}]trim=start={a - start:.3f}:end={b - start:.3f},setpts=PTS-STARTPTS[t{n}];")
-        parts.append(build_filter(Scene(scene), w, h, cam, face_x, game_ratio, bottom_margin,
+        fx = _face_x(src, a, b, w, h, face_x) if Scene(scene) is Scene.FULL_CAM else 0.5
+        parts.append(build_filter(Scene(scene), w, h, cam, fx, game_ratio, bottom_margin,
                                   inp=f"t{n}", out=f"o{n}", tag=f"p{n}") + ";")
     parts.append("".join(f"[o{n}]" for n in range(k)) + f"concat=n={k}:v=1:a=0[v]")
     out.parent.mkdir(parents=True, exist_ok=True)
