@@ -16,6 +16,19 @@ CAM_SHARE = 0.31  # part de la hauteur occupee par la cam en scene cam + jeu
 GAME_RATIO = 1.0       # ratio largeur / hauteur de la zone jeu (1 = carre, 16/9 = jeu entier)
 BOTTOM_MARGIN = 0.0    # espace flou sous le jeu, en part de la hauteur (0 = jeu colle en bas)
 
+# Vocabulaire propre a tes streams, donne a Whisper (option "hotwords").
+# Desactive : teste le 19/11/2026, il n'a pas corrige "GTA 6" et a degrade le decoupage en phrases.
+# Exemple : VOCAB = "GTA 6, Rockstar, Twitch, TikTok"
+VOCAB = ""
+
+# Corrections automatiques des erreurs recurrentes de Whisper (mot ou expression -> correction).
+# Appliquees a chaque lecture de la transcription : pas besoin de retranscrire apres un ajout.
+CORRECTIONS = {
+    "marouquins": "marocains",
+    "marouquin": "marocain",
+    "j'étais à 6": "GTA 6",
+}
+
 # FFmpeg installe par setup.ps1 : utilise meme si le PATH du terminal n'est pas a jour
 FFMPEG_DIR = Path(r"D:\Tools\ffmpeg\bin")
 if not shutil.which("ffmpeg") and (FFMPEG_DIR / "ffmpeg.exe").exists():
