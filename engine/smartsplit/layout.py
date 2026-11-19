@@ -68,10 +68,21 @@ def game_crop(src_w: int, src_h: int, ratio: float, cam_px: tuple[int, int, int,
     return (0, src_h - h, w, h)  # dernier recours
 
 
-def build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect = CAM_TOP_RIGHT,
+_INTERNAL = ("s0", "s1", "s2", "bg", "cam", "game", "t", "a", "b")
+
+
+def build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect | None = CAM_TOP_RIGHT,
                  face_x: float = 0.5, game_ratio: float = GAME_RATIO,
-                 bottom_margin: float = BOTTOM_MARGIN) -> str:
-    """Construit le filtre FFmpeg qui produit l'image 1080x1920 dans [v]."""
+                 bottom_margin: float = BOTTOM_MARGIN, inp: str = "0:v", out: str = "v", tag: str = "") -> str:
+    """Filtre FFmpeg qui lit [inp] et produit l'image 1080x1920 dans [out]."""
+    f = _build_filter(scene, src_w, src_h, cam or CAM_TOP_RIGHT, face_x, game_ratio, bottom_margin)
+    for lab in _INTERNAL:
+        f = f.replace(f"[{lab}]", f"[{tag}{lab}]")
+    return f.replace("[0:v]", f"[{inp}]").replace("[v]", f"[{out}]")
+
+
+def _build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect, face_x: float,
+                  game_ratio: float, bottom_margin: float) -> str:
     if scene is Scene.CAM_JEU:
         cam_h = _even(OUT_H * CAM_SHARE)                   # 596 px
         game_h = _even(OUT_W / game_ratio)                 # 810 px en 4:3
@@ -103,6 +114,12 @@ def build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect = CAM_TOP_RIGHT
     raise ValueError(scene)
 
 
+def _codec(encoder: str) -> tuple[list[str], list[str]]:
+    if encoder == "h264_nvenc":
+        return ["-hwaccel", "cuda"], ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"]
+    return [], ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]  # repli sans GPU NVIDIA
+
+
 def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
                 cam: Rect = CAM_TOP_RIGHT, face_x: float = 0.5, encoder: str = "h264_nvenc",
                 game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN) -> Path:
@@ -114,13 +131,7 @@ def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
     # Le decodage GPU sort du NV12, que certains filtres (flou) lisent mal : on repasse en yuv420p
     vf = vf.replace("[0:v]", "[0:v]format=yuv420p,", 1)
     out.parent.mkdir(parents=True, exist_ok=True)
-
-    if encoder == "h264_nvenc":
-        venc = ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"]
-        hw = ["-hwaccel", "cuda"]
-    else:  # repli sans GPU NVIDIA
-        venc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
-        hw = []
+    hw, venc = _codec(encoder)
 
     if out.suffix.lower() == ".png":  # apercu : une seule image
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(src),
@@ -132,6 +143,40 @@ def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src),
         "-filter_complex", vf, "-map", "[v]", "-map", "0:a?",
+        *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart", str(out),
+    ]
+    subprocess.run(cmd, check=True)
+    return out
+
+
+def render_segments(src: Path, start: float, end: float, pieces: list, out: Path,
+                    face_x: float = 0.5, encoder: str = "h264_nvenc",
+                    game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN) -> Path:
+    """Rend [start, end] en changeant de mise en page a chaque changement de scene.
+
+    pieces : liste de (debut, fin, scene, cam) en secondes absolues, issue de scenes.segments_for().
+    """
+    if not pieces:
+        raise ValueError("aucune scene sur cet intervalle")
+    if len(pieces) == 1:
+        a, b, scene, cam = pieces[0]
+        return render_clip(src, start, end, Scene(scene), out, cam or CAM_TOP_RIGHT, face_x, encoder,
+                           game_ratio, bottom_margin)
+    info = probe(src)
+    w, h, k = info["width"], info["height"], len(pieces)
+    parts = [f"[0:v]format=yuv420p,split={k}" + "".join(f"[i{n}]" for n in range(k)) + ";"]
+    for n, (a, b, scene, cam) in enumerate(pieces):
+        parts.append(f"[i{n}]trim=start={a - start:.3f}:end={b - start:.3f},setpts=PTS-STARTPTS[t{n}];")
+        parts.append(build_filter(Scene(scene), w, h, cam, face_x, game_ratio, bottom_margin,
+                                  inp=f"t{n}", out=f"o{n}", tag=f"p{n}") + ";")
+    parts.append("".join(f"[o{n}]" for n in range(k)) + f"concat=n={k}:v=1:a=0[v]")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    hw, venc = _codec(encoder)
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src),
+        "-filter_complex", "".join(parts), "-map", "[v]", "-map", "0:a?",
         *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(out),
     ]

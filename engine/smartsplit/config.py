@@ -23,6 +23,8 @@ if not shutil.which("ffmpeg") and (FFMPEG_DIR / "ffmpeg.exe").exists():
 
 # Modeles deja telecharges : pas de verification aupres de Hugging Face
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+# Modeles d'IA toujours sur D: (dans data\models), meme si la variable n'est pas definie dans le terminal
+os.environ.setdefault("HF_HOME", str(DATA / "models"))
 
 
 @dataclass(frozen=True)
@@ -53,5 +55,8 @@ class Rect:
         return cls(x, y, w, h)
 
 
-# Image de la cam (sans le cadre rose) en haut a droite, mesuree sur un enregistrement 2560x1440
-CAM_TOP_RIGHT = Rect(1956 / 2560, 54 / 1440, 530 / 2560, 292 / 1440)
+# Image de la cam en haut a droite, mesuree sur un enregistrement 2560x1440 :
+# bord exterieur de l'image webcam 536 x 298 a (1953, 52), et zone gardee (3 px en retrait, sans le cadre rose)
+CAM_OUTER_W, CAM_OUTER_H = 536 / 2560, 298 / 1440
+CAM_INSET = 3 / 1440
+CAM_TOP_RIGHT = Rect(1956 / 2560, 55 / 1440, 530 / 2560, 292 / 1440)
