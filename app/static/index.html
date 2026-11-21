@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Smart Split AI</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='14' y='4' width='36' height='56' rx='8' fill='%23E25993'/%3E%3Crect x='20' y='12' width='24' height='14' rx='3' fill='%23fff'/%3E%3Crect x='20' y='30' width='24' height='22' rx='3' fill='%23ffffff99'/%3E%3C/svg%3E">
+<style>
+@font-face { font-family: "Poppins"; src: url("/assets/Poppins-Bold.ttf") format("truetype"); font-weight: 700; }
+:root {
+  --bg: #121015; --panel: #1b1820; --panel2: #232029; --line: #2f2b36; --text: #f2eef5; --muted: #a39cab;
+  --dim: #6f6878; --pink: #E25993; --pink2: #f07cad; --pinkbg: #E2599322; --ok: #3ccf8e; --okbg: #3ccf8e1f;
+  --bad: #ff6b6b; --badbg: #ff6b6b1f; --warn: #f5b84b; --r: 12px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3 { font-family: "Poppins", "Segoe UI", sans-serif; font-weight: 700; margin: 0; letter-spacing: .2px; }
+h2 { font-size: 20px; } h3 { font-size: 15px; }
+.app { display: grid; grid-template-columns: 220px 1fr; height: 100vh; }
+nav { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 18px 12px; gap: 4px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 20px; }
+.brand .logo { width: 26px; height: 40px; border-radius: 6px; background: var(--pink); position: relative; flex: none; }
+.brand .logo::before { content: ""; position: absolute; left: 4px; right: 4px; top: 5px; height: 10px; background: #fff; border-radius: 2px; }
+.brand .logo::after { content: ""; position: absolute; left: 4px; right: 4px; top: 18px; bottom: 5px; background: #ffffffa0; border-radius: 2px; }
+.brand h1 { font-size: 16px; line-height: 1.1; } .brand small { color: var(--muted); font-size: 11px; display: block; }
+.navbtn { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; border: 0; background: none; color: var(--muted); cursor: pointer; text-align: left; }
+.navbtn:hover { background: var(--panel2); color: var(--text); }
+.navbtn.active { background: var(--pinkbg); color: var(--text); }
+.navbtn.active svg { color: var(--pink); }
+.navbtn .count { margin-left: auto; background: var(--pink); color: #fff; font-size: 11px; border-radius: 10px; padding: 0 7px; }
+nav .foot { margin-top: auto; font-size: 12px; color: var(--muted); padding: 8px; display: grid; gap: 6px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); margin-right: 6px; }
+.dot.on { background: var(--ok); } .dot.off { background: var(--warn); }
+main { overflow: auto; padding: 26px 30px 40px; }
+.view { display: none; max-width: 1400px; } .view.active { display: block; }
+.head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.head p { color: var(--muted); margin: 2px 0 0; }
+.spacer { flex: 1; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 18px; align-items: start; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: #4a4453; }
+.btn.primary { background: var(--pink); border-color: var(--pink); color: #fff; font-weight: 600; }
+.btn.primary:hover { background: var(--pink2); }
+.btn.ok { background: var(--okbg); border-color: #3ccf8e55; color: var(--ok); }
+.btn.bad { background: var(--badbg); border-color: #ff6b6b55; color: var(--bad); }
+.btn.ghost { background: none; }
+.btn.small { padding: 5px 10px; font-size: 13px; }
+.btn:disabled { opacity: .45; cursor: default; }
+input[type=text], input[type=number], textarea, select { background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; outline: none; width: 100%; }
+input:focus, textarea:focus, select:focus { border-color: var(--pink); }
+textarea { resize: vertical; min-height: 90px; }
+label.chk { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+input[type=checkbox] { accent-color: var(--pink); width: 16px; height: 16px; }
+.muted { color: var(--muted); } .dim { color: var(--dim); } .small { font-size: 12px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.stack { display: grid; gap: 12px; }
+.vods { display: grid; gap: 6px; max-height: 420px; overflow: auto; margin: 12px 0; padding-right: 4px; }
+.vod { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); cursor: pointer; }
+.vod:hover { border-color: #4a4453; } .vod.sel { border-color: var(--pink); background: var(--pinkbg); }
+.vod .name { font-weight: 600; } .vod .meta { color: var(--muted); font-size: 12px; }
+.tag { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: var(--panel2); color: var(--muted); white-space: nowrap; }
+.tag.ok { background: var(--okbg); color: var(--ok); } .tag.bad { background: var(--badbg); color: var(--bad); }
+.tag.pink { background: var(--pinkbg); color: var(--pink2); }
+.empty { text-align: center; color: var(--muted); padding: 36px 10px; }
+details summary { cursor: pointer; color: var(--muted); }
+.phases-redo { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; }
+.job { padding: 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); display: grid; gap: 12px; }
+.job .title { display: flex; align-items: center; gap: 10px; }
+.job .title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar { height: 8px; background: var(--bg); border-radius: 6px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: linear-gradient(90deg, var(--pink), var(--pink2)); border-radius: 6px; transition: width .6s; }
+.steps { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+.step { font-size: 11px; color: var(--dim); text-align: center; padding-top: 6px; border-top: 3px solid var(--line); }
+.step.en_cours { color: var(--text); border-color: var(--pink); }
+.step.fait { color: var(--muted); border-color: #7b4a62; }
+.msg { font-family: Consolas, monospace; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+pre.log { background: #0b0a0d; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; max-height: 300px; overflow: auto; font: 12px/1.5 Consolas, monospace; color: #cfc7d6; margin: 0; white-space: pre-wrap; }
+/* Clips */
+.clips-layout { display: grid; grid-template-columns: 260px 1fr; gap: 18px; align-items: start; }
+.streams { display: grid; gap: 6px; position: sticky; top: 0; }
+.stream { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+.stream:hover { border-color: #4a4453; } .stream.sel { border-color: var(--pink); background: var(--pinkbg); }
+.stream .n { font-weight: 600; font-size: 13px; } .stream .m { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 3px; }
+.seg button { border: 0; background: none; padding: 5px 11px; border-radius: 7px; cursor: pointer; color: var(--muted); }
+.seg button.on { background: var(--panel2); color: var(--text); }
+.cgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+.clip { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: transform .12s, border-color .12s; }
+.clip:hover { border-color: #4a4453; transform: translateY(-2px); }
+.clip .thumb { aspect-ratio: 9 / 16; background: #000; position: relative; }
+.clip video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.clip .ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); font-size: 12px; text-align: center; padding: 10px; }
+.clip .badges { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 6px; justify-content: space-between; }
+.note { background: #000a; color: #fff; font-weight: 700; font-size: 12px; border-radius: 6px; padding: 2px 7px; }
+.note.hi { background: var(--pink); }
+.state { font-size: 11px; font-weight: 600; border-radius: 6px; padding: 2px 7px; }
+.state.publie { background: var(--ok); color: #062; } .state.rejete { background: var(--bad); color: #300; }
+.clip .info { padding: 10px 12px; display: grid; gap: 4px; }
+.clip .t { font-weight: 600; font-size: 13px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 34px; }
+.clip .m { font-size: 12px; color: var(--muted); }
+.clip.norender { opacity: .6; }
+/* Detail */
+.modal { position: fixed; inset: 0; background: #000c; display: none; align-items: center; justify-content: center; z-index: 10; padding: 24px; }
+.modal.open { display: flex; }
+.detail { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: min(1100px, 100%); max-height: 100%; display: grid; grid-template-columns: auto 1fr; overflow: hidden; }
+.detail .player { background: #000; display: flex; align-items: center; justify-content: center; }
+.detail video { height: min(82vh, 860px); aspect-ratio: 9 / 16; display: block; background: #000; }
+.detail .side { padding: 22px; overflow: auto; display: flex; flex-direction: column; gap: 14px; max-height: min(82vh, 860px); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+.kv span:nth-child(odd) { color: var(--muted); }
+.quote { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; color: #d8d0de; max-height: 160px; overflow: auto; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--bg); border-radius: 20px; padding: 4px 11px; font-size: 12px; cursor: pointer; }
+.chip:hover, .chip.on { border-color: var(--bad); color: var(--bad); }
+.x { position: absolute; top: 18px; right: 22px; border: 0; background: var(--panel2); width: 34px; height: 34px; border-radius: 50%; cursor: pointer; font-size: 18px; }
+.keys { font-size: 11px; color: var(--dim); }
+kbd { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-family: inherit; }
+/* Settings */
+.set { display: grid; grid-template-columns: 1fr 220px auto; gap: 14px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.set:last-child { border-bottom: 0; }
+.set .lbl b { display: block; } .set .lbl span { color: var(--muted); font-size: 12px; }
+.set.wide { grid-template-columns: 1fr; }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--panel2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 10px; opacity: 0; transition: .25s; pointer-events: none; z-index: 20; }
+.toast.show { opacity: 1; transform: translateX(-50%); }
+.toast.err { border-color: var(--bad); color: var(--bad); }
+svg.i { width: 18px; height: 18px; flex: none; }
+@media (max-width: 1100px) { .grid2, .clips-layout { grid-template-columns: 1fr; } .streams { position: static; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav>
+    <div class="brand"><div class="logo"></div><div><h1>Smart Split AI</h1><small>Clips TikTok depuis tes streams</small></div></div>
+    <button class="navbtn active" data-view="traitement">
+      <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z"/></svg>Traitement<span class="count" id="nav-jobs" hidden></span></button>
+    <button class="navbtn" data-view="clips">
+      <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 9l5 3-5 3V9z"/></svg>Clips<span class="count" id="nav-todo" hidden></span></button>
+    <button class="navbtn" data-view="reglages">
+      <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>Réglages</button>
+    <div class="foot">
+      <div><span class="dot" id="ollama-dot"></span><span id="ollama-txt">Ollama…</span></div>
+      <div id="learn-txt" class="dim"></div>
+    </div>
+  </nav>
+
+  <main>
+    <!-- TRAITEMENT -->
+    <section class="view active" id="view-traitement">
+      <div class="head"><div><h2>Traitement</h2><p>Choisis un ou plusieurs enregistrements, l'IA repère les moments et rend les clips 9:16.</p></div></div>
+      <div class="grid2">
+        <div class="card">
+          <div class="row"><h3>Enregistrements</h3><span class="spacer"></span>
+            <button class="btn small ghost" id="vod-refresh" title="Actualiser">Actualiser</button>
+            <button class="btn small" id="vod-browse">Parcourir…</button></div>
+          <div class="small dim" id="vod-dir" style="margin-top:4px"></div>
+          <div class="vods" id="vods"></div>
+          <div class="row"><input type="text" id="vod-path" placeholder="Ou colle le chemin d'une vidéo (ex. F:\Vidéos stream\2026-11-21 20-00-00.mp4)"></div>
+        </div>
+        <div class="card stack">
+          <h3>Options</h3>
+          <div class="row"><label style="flex:1">Clips à rendre <span class="dim small">(0 = tous les moments repérés)</span></label>
+            <input type="number" id="opt-max" min="0" max="200" style="width:90px"></div>
+          <label class="chk"><input type="checkbox" id="opt-norender"> Analyse seulement, sans rendre les vidéos</label>
+          <details><summary>Refaire certaines étapes</summary>
+            <div class="small dim" style="margin-top:8px">Les étapes déjà faites sont reprises depuis le cache. Coche celles à recalculer (par ex. après un changement de réglage).</div>
+            <div class="phases-redo" id="opt-redo"></div>
+          </details>
+          <div id="sel-summary" class="small muted"></div>
+          <button class="btn primary" id="run">Lancer le traitement</button>
+        </div>
+      </div>
+      <div class="head" style="margin-top:28px"><h3>File d'attente</h3><span class="spacer"></span><button class="btn small ghost" id="jobs-clear">Effacer les terminés</button></div>
+      <div class="stack" id="jobs"><div class="empty card">Aucun traitement pour l'instant.</div></div>
+    </section>
+
+    <!-- CLIPS -->
+    <section class="view" id="view-clips">
+      <div class="head"><div><h2>Clips</h2><p>Valide les clips : ceux que tu publies et ceux que tu rejettes (avec la raison) servent d'exemples à l'IA.</p></div></div>
+      <div class="clips-layout">
+        <div class="streams" id="streams"></div>
+        <div>
+          <div class="toolbar">
+            <div class="seg" id="filter">
+              <button data-f="tous" class="on">Tous</button><button data-f="valider">À valider</button>
+              <button data-f="publie">Publiés</button><button data-f="rejete">Rejetés</button><button data-f="nonrendu">Non rendus</button></div>
+            <div class="seg" id="sort"><button data-s="note" class="on">Par note</button><button data-s="temps">Chronologique</button></div>
+            <span class="spacer"></span>
+            <button class="btn small" id="render-more">Rendre 10 de plus</button>
+            <button class="btn small" id="open-folder">Ouvrir le dossier</button>
+          </div>
+          <div class="small muted" id="clips-sum" style="margin-bottom:12px"></div>
+          <div class="cgrid" id="cgrid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REGLAGES -->
+    <section class="view" id="view-reglages">
+      <div class="head"><div><h2>Réglages</h2><p>Enregistrés dans data\settings.json. Ils s'appliquent aux prochains traitements.</p></div>
+        <span class="spacer"></span><button class="btn primary" id="save-settings">Enregistrer</button></div>
+      <div class="stack">
+        <div class="card"><h3>Application</h3><div id="set-app"></div></div>
+        <div class="card"><h3>Montage et IA</h3><div id="set-engine"></div></div>
+        <div class="card"><h3>Apprentissage</h3><div id="set-learn" class="muted" style="margin-top:8px"></div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal" id="modal">
+  <button class="x" id="modal-x" title="Fermer (Échap)">×</button>
+  <div class="detail" id="detail"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const PHASES = ["scenes", "transcription", "reactions", "vision", "notation", "choix", "montage", "rendu"];
+const PHASE_LBL = {scenes: "Scènes", transcription: "Transcription", reactions: "Réactions", vision: "Vision",
+  notation: "Notation IA", choix: "Choix", montage: "Montage IA", rendu: "Rendu"};
+const STATUS_LBL = {attente: "En attente", en_cours: "En cours", termine: "Terminé", erreur: "Erreur", annule: "Annulé"};
+const REASONS = ["Manque de contexte au début", "Fin coupée trop tôt", "Trop long", "Pas intéressant",
+  "Cinématique sans réaction", "Dialogue du jeu, pas moi", "Mauvais cadrage", "Coupes mal placées", "Titre raté", "Doublon"];
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const fmtT = t => { t = Math.max(0, Math.round(t || 0)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`; };
+const fmtDur = s => { s = Math.round(s || 0); if (s < 60) return `${s} s`; const m = Math.floor(s / 60);
+  return m < 60 ? `${m} min ${String(s % 60).padStart(2, "0")}` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
+const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(1).replace(".", ",") + " Go" : Math.round(b / 1e6) + " Mo";
+const fmtDate = t => new Date(t * 1000).toLocaleString("fr-FR", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"});
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+  return d;
+}
+let toastT;
+function toast(msg, err) { const t = $("#toast"); t.textContent = msg; t.className = "toast show" + (err ? " err" : "");
+  clearTimeout(toastT); toastT = setTimeout(() => t.className = "toast", 3200); }
+
+/* Navigation */
+let view = "traitement";
+function show(v) {
+  view = v;
+  document.querySelectorAll(".navbtn").forEach(b => b.classList.toggle("active", b.dataset.view === v));
+  document.querySelectorAll(".view").forEach(s => s.classList.toggle("active", s.id === "view-" + v));
+  if (v === "clips") loadStreams();
+  if (v === "reglages") loadSettings();
+  if (v === "traitement") loadVods();
+}
+document.querySelectorAll(".navbtn").forEach(b => b.onclick = () => show(b.dataset.view));
+
+/* ---------- Traitement ---------- */
+let vods = [], selected = new Set(), appSettings = {max_clips: 10};
+async function loadVods() {
+  try {
+    const d = await api("/api/vods");
+    vods = d.vods;
+    $("#vod-dir").textContent = d.exists ? d.dir : `Dossier introuvable : ${d.dir} (à changer dans Réglages)`;
+    const box = $("#vods");
+    if (!vods.length) { box.innerHTML = `<div class="empty">Aucune vidéo dans ce dossier.</div>`; renderSel(); return; }
+    box.innerHTML = vods.map((v, i) => `<div class="vod ${selected.has(v.path) ? "sel" : ""}" data-i="${i}">
+      <input type="checkbox" ${selected.has(v.path) ? "checked" : ""} tabindex="-1">
+      <div><div class="name">${esc(v.name)}</div><div class="meta">${fmtSize(v.size)} · ${fmtDate(v.mtime)}</div></div>
+      ${v.traite ? `<span class="tag ok">Traité · ${v.clips} moments</span>` : `<span class="tag">Nouveau</span>`}</div>`).join("");
+    box.querySelectorAll(".vod").forEach(el => el.onclick = () => {
+      const p = vods[+el.dataset.i].path; selected.has(p) ? selected.delete(p) : selected.add(p); loadVodsSoft(); });
+    renderSel();
+  } catch (e) { toast(e.message, true); }
+}
+function loadVodsSoft() {
+  document.querySelectorAll(".vod").forEach(el => { const on = selected.has(vods[+el.dataset.i].path);
+    el.classList.toggle("sel", on); el.querySelector("input").checked = on; });
+  renderSel();
+}
+function renderSel() {
+  const extra = $("#vod-path").value.trim();
+  const n = selected.size + (extra ? 1 : 0);
+  $("#sel-summary").textContent = n ? `${n} vidéo${n > 1 ? "s" : ""} sélectionnée${n > 1 ? "s" : ""}. Compte environ 20 à 25 min pour 5 h de stream.` : "Aucune vidéo sélectionnée.";
+  $("#run").disabled = !n;
+}
+$("#vod-path").oninput = renderSel;
+$("#vod-refresh").onclick = loadVods;
+$("#vod-browse").onclick = async () => {
+  try { const d = await api("/api/pick", {}); if (d.path) { $("#vod-path").value = d.path; renderSel(); } }
+  catch (e) { toast(e.message, true); }
+};
+$("#opt-redo").innerHTML = PHASES.map(p => `<label class="chk small"><input type="checkbox" value="${p}"> ${PHASE_LBL[p]}</label>`).join("");
+$("#run").onclick = async () => {
+  const srcs = [...selected]; const extra = $("#vod-path").value.trim().replace(/^"|"$/g, "");
+  if (extra) srcs.push(extra);
+  const redo = [...document.querySelectorAll("#opt-redo input:checked")].map(i => i.value);
+  try {
+    await api("/api/jobs", {srcs, max_clips: +$("#opt-max").value || 0, no_render: $("#opt-norender").checked, redo});
+    selected.clear(); $("#vod-path").value = ""; document.querySelectorAll("#opt-redo input").forEach(i => i.checked = false);
+    loadVodsSoft(); toast("Ajouté à la file d'attente"); poll();
+  } catch (e) { toast(e.message, true); }
+};
+$("#jobs-clear").onclick = async () => { await api("/api/jobs/clear", {}); poll(); };
+
+const openLogs = new Map();   // id -> {since, lines}
+function jobCard(j) {
+  const pct = Math.round(j.progress * 100);
+  const el = (j.started ? (j.ended || Date.now() / 1000) - j.started : 0);
+  const cur = PHASES.filter(p => j.phases[p].etat === "en_cours").pop();
+  const msg = j.status === "erreur" ? j.error : cur ? `${PHASE_LBL[cur]} : ${j.phases[cur].msg}` : (j.status === "termine" ? "Terminé" : "");
+  const tag = {en_cours: "pink", termine: "ok", erreur: "bad"}[j.status] || "";
+  const steps = PHASES.filter(p => !(j.no_render && p === "rendu"));
+  return `<div class="job" data-id="${j.id}">
+    <div class="title"><b title="${esc(j.src)}">${esc(j.name)}</b><span class="tag ${tag}">${STATUS_LBL[j.status]}</span>
+      ${j.status !== "attente" ? `<span class="small dim">${fmtDur(el)}</span>` : ""}<span class="spacer"></span>
+      ${j.status === "termine" ? `<button class="btn small primary" data-act="see">Voir les clips</button>` : ""}
+      ${["attente", "en_cours"].includes(j.status) ? `<button class="btn small bad" data-act="cancel">Annuler</button>` : ""}
+      <button class="btn small ghost" data-act="log">${openLogs.has(j.id) ? "Masquer" : "Journal"}</button></div>
+    ${j.status === "attente" ? "" : `<div class="bar"><i style="width:${pct}%"></i></div>
+    <div class="steps" style="grid-template-columns:repeat(${steps.length},1fr)">${steps.map(p => `<div class="step ${j.phases[p].etat}">${PHASE_LBL[p]}</div>`).join("")}</div>`}
+    ${msg ? `<div class="msg" title="${esc(msg)}">${esc(msg)}</div>` : ""}
+    ${openLogs.has(j.id) ? `<pre class="log" id="log-${j.id}">${esc(openLogs.get(j.id).lines.join("\n"))}</pre>` : ""}
+  </div>`;
+}
+let jobsCache = [];
+function renderJobs(js) {
+  jobsCache = js;
+  const box = $("#jobs");
+  const scroll = {}; box.querySelectorAll("pre.log").forEach(p => scroll[p.id] = p.scrollHeight - p.scrollTop - p.clientHeight < 30);
+  box.innerHTML = js.length ? js.slice().reverse().map(jobCard).join("") : `<div class="empty card">Aucun traitement pour l'instant.</div>`;
+  box.querySelectorAll("pre.log").forEach(p => { if (scroll[p.id] !== false) p.scrollTop = p.scrollHeight; });
+  box.querySelectorAll(".job").forEach(card => card.querySelectorAll("[data-act]").forEach(b => b.onclick = async () => {
+    const id = card.dataset.id, j = js.find(x => x.id === id);
+    if (b.dataset.act === "cancel") { if (confirm("Arrêter ce traitement ? Les étapes terminées restent en cache.")) { await api("/api/jobs/cancel", {id}); poll(); } }
+    if (b.dataset.act === "see") { currentStem = j.stem; show("clips"); }
+    if (b.dataset.act === "log") { if (openLogs.has(id)) openLogs.delete(id); else { openLogs.set(id, {since: 0, lines: []}); await fetchLog(id); } renderJobs(jobsCache); }
+  }));
+  const active = js.filter(j => ["attente", "en_cours"].includes(j.status)).length;
+  $("#nav-jobs").hidden = !active; $("#nav-jobs").textContent = active;
+}
+async function fetchLog(id) {
+  const L = openLogs.get(id); if (!L) return;
+  try { const d = await api(`/api/job?id=${id}&since=${L.since}`); L.lines.push(...d.log); L.since = d.n_lines;
+    if (L.lines.length > 3000) L.lines.splice(0, L.lines.length - 3000); } catch {}
+}
+let lastStatuses = {};
+async function poll() {
+  try {
+    const d = await api("/api/state");
+    for (const id of openLogs.keys()) await fetchLog(id);
+    renderJobs(d.jobs);
+    $("#ollama-dot").className = "dot " + (d.ollama ? "on" : "off");
+    $("#ollama-txt").textContent = d.ollama ? "Ollama prêt" : "Ollama arrêté (démarré au besoin)";
+    $("#learn-txt").textContent = `${d.feedback.publies} publiés · ${d.feedback.rejetes} rejetés appris`;
+    feedbackStats = d.feedback;
+    for (const j of d.jobs) {
+      if (lastStatuses[j.id] && lastStatuses[j.id] !== j.status && j.status === "termine") { toast(`${j.name} : clips prêts`); if (view === "clips") loadStreams(); }
+      lastStatuses[j.id] = j.status;
+    }
+  } catch { $("#ollama-txt").textContent = "Serveur arrêté : relance l'application"; $("#ollama-dot").className = "dot"; }
+}
+setInterval(poll, 2000);
+
+/* ---------- Clips ---------- */
+let streams = [], currentStem = null, clipsData = null, filter = "tous", sortBy = "note", feedbackStats = {raisons: []};
+async function loadStreams() {
+  try {
+    const d = await api("/api/streams");
+    streams = d.streams;
+    if (!currentStem || !streams.find(s => s.stem === currentStem)) currentStem = streams[0]?.stem || null;
+    const todo = streams.reduce((a, s) => a + Math.max(0, s.rendus - s.publies - s.rejetes), 0);
+    $("#nav-todo").hidden = !todo; $("#nav-todo").textContent = todo;
+    $("#streams").innerHTML = streams.length ? streams.map(s => `<div class="stream ${s.stem === currentStem ? "sel" : ""}" data-stem="${esc(s.stem)}">
+      <div class="n">${esc(s.stem)}</div>
+      <div class="m">${s.duration ? fmtDur(s.duration) + " · " : ""}${s.rendus} rendus / ${s.moments} moments</div>
+      <div class="m">${s.publies ? `<span class="tag ok">${s.publies} publiés</span> ` : ""}${s.rejetes ? `<span class="tag bad">${s.rejetes} rejetés</span>` : ""}${!s.complet ? `<span class="tag">incomplet</span>` : ""}</div>
+    </div>`).join("") : `<div class="empty card">Aucun stream traité.</div>`;
+    document.querySelectorAll(".stream").forEach(el => el.onclick = () => { currentStem = el.dataset.stem; loadStreams(); });
+    if (currentStem) await loadClips(); else { $("#cgrid").innerHTML = ""; $("#clips-sum").textContent = ""; }
+  } catch (e) { toast(e.message, true); }
+}
+function clipState(c) {
+  const v = c.versions.find(v => v.feedback); return v ? v.feedback.decision : (c.rendu ? "valider" : "nonrendu");
+}
+function visibleClips() {
+  let cs = clipsData.clips.slice();
+  if (filter !== "tous") cs = cs.filter(c => clipState(c) === filter);
+  else cs = cs.filter(c => c.rendu);
+  cs.sort(sortBy === "note" ? (a, b) => (b.score ?? b.note ?? 0) - (a.score ?? a.note ?? 0) : (a, b) => a.start - b.start);
+  return cs;
+}
+async function loadClips() {
+  try { clipsData = await api("/api/clips?stem=" + encodeURIComponent(currentStem)); renderClips(); }
+  catch (e) { toast(e.message, true); }
+}
+function renderClips() {
+  const cs = visibleClips(), all = clipsData.clips;
+  const nr = all.length - clipsData.rendus;
+  $("#clips-sum").textContent = `${clipsData.rendus} clips rendus, ${nr} autres moments repérés non rendus.` +
+    (clipsData.report ? ` Traitement en ${fmtDur(clipsData.report.total_s)}.` : "");
+  $("#render-more").disabled = !nr || !clipsData.src;
+  $("#render-more").textContent = `Rendre ${Math.min(10, nr) || 10} de plus`;
+  $("#cgrid").innerHTML = cs.length ? cs.map(c => {
+    const v = c.versions.find(v => v.kind === "long" && v.url) || c.versions.find(v => v.url);
+    const st = clipState(c);
+    return `<div class="clip ${c.rendu ? "" : "norender"}" data-i="${c.index}">
+      <div class="thumb">${v ? `<video src="${v.url}#t=1" preload="metadata" muted playsinline></video>` : `<div class="ph">Pas encore rendu</div>`}
+        <div class="badges"><span class="note ${c.note >= 9 ? "hi" : ""}">${c.note ?? "?"}/10</span>
+        ${st === "publie" ? `<span class="state publie">Publié</span>` : st === "rejete" ? `<span class="state rejete">Rejeté</span>` : ""}</div></div>
+      <div class="info"><div class="t">${esc(c.titre || c.text?.slice(0, 70) || "Sans titre")}</div>
+        <div class="m">${esc(c.type)} · ${fmtDur(c.versions[0]?.duree)} · à ${fmtT(c.start)}${c.versions.length > 1 ? " · + courte" : ""}</div></div></div>`;
+  }).join("") : `<div class="empty card" style="grid-column:1/-1">${filter === "tous" ? "Aucun clip rendu pour ce stream. Utilise « Rendre 10 de plus »." : "Aucun clip dans ce filtre."}</div>`;
+  document.querySelectorAll(".clip").forEach(el => {
+    const vid = el.querySelector("video");
+    if (vid) { el.onmouseenter = () => { vid.currentTime = 0; vid.play().catch(() => {}); };
+      el.onmouseleave = () => { vid.pause(); vid.currentTime = 1; }; }
+    el.onclick = () => openDetail(+el.dataset.i);
+  });
+}
+$("#filter").onclick = e => { const b = e.target.closest("button"); if (!b) return; filter = b.dataset.f;
+  $("#filter").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); renderClips(); };
+$("#sort").onclick = e => { const b = e.target.closest("button"); if (!b) return; sortBy = b.dataset.s;
+  $("#sort").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); renderClips(); };
+$("#open-folder").onclick = () => api("/api/open", {path: clipsData?.out_dir}).catch(() => toast("Dossier pas encore créé", true));
+$("#render-more").onclick = async () => {
+  const n = clipsData.rendus + 10;
+  try { await api("/api/jobs", {src: clipsData.src, max_clips: n}); toast(`Rendu lancé (${n} clips au total)`); show("traitement"); }
+  catch (e) { toast(e.message, true); }
+};
+
+/* Détail d'un clip */
+let detailIdx = null, detailKind = "long", rejecting = false;
+function openDetail(i) { detailIdx = i; detailKind = "long"; rejecting = false; renderDetail(); $("#modal").classList.add("open"); }
+function closeDetail() { $("#modal").classList.remove("open"); $("#detail").innerHTML = ""; detailIdx = null; }
+$("#modal-x").onclick = closeDetail;
+$("#modal").onclick = e => { if (e.target.id === "modal") closeDetail(); };
+function renderDetail() {
+  const c = clipsData.clips.find(x => x.index === detailIdx); if (!c) return closeDetail();
+  let v = c.versions.find(x => x.kind === detailKind) || c.versions[0];
+  detailKind = v.kind;
+  const fb = v.feedback;
+  const reasons = [...new Set([...REASONS, ...(feedbackStats.raisons || [])])];
+  $("#detail").innerHTML = `
+    <div class="player">${v.url ? `<video id="dvid" src="${v.url}" controls autoplay></video>` : `<div class="empty" style="width:340px">Cette version n'est pas encore rendue.</div>`}</div>
+    <div class="side">
+      <div><div class="row"><span class="note ${c.note >= 9 ? "hi" : ""}">${c.note ?? "?"}/10</span><span class="tag pink">${esc(c.type)}</span>
+        ${fb ? `<span class="state ${fb.decision}">${fb.decision === "publie" ? "Publié" : "Rejeté"}</span>` : ""}</div>
+        <h2 style="margin-top:10px">${esc(c.titre || "Sans titre")}</h2></div>
+      ${c.versions.length > 1 ? `<div class="seg" id="kind">${c.versions.map(x => `<button data-k="${x.kind}" class="${x.kind === detailKind ? "on" : ""}">${x.kind === "long" ? "Version complète" : "Version courte"} · ${fmtDur(x.duree)}</button>`).join("")}</div>` : ""}
+      <div class="kv"><span>Moment</span><span>${fmtT(c.start)} → ${fmtT(c.end)} dans le stream</span>
+        <span>Durée</span><span>${fmtDur(v.duree)}${c.passages ? ` · ${c.passages} passages montés` : ""}</span>
+        ${v.size ? `<span>Fichier</span><span>${fmtSize(v.size)}</span>` : ""}</div>
+      ${c.raison ? `<div><div class="small muted" style="margin-bottom:4px">Pourquoi l'IA l'a choisi</div><div class="quote">${esc(c.raison)}</div></div>` : ""}
+      ${c.text ? `<div><div class="small muted" style="margin-bottom:4px">Ce que tu dis</div><div class="quote">${esc(c.text)}</div></div>` : ""}
+      ${fb?.raison ? `<div><div class="small muted" style="margin-bottom:4px">Raison du rejet</div><div class="quote">${esc(fb.raison)}</div></div>` : ""}
+      ${v.url ? (rejecting ? `
+        <div class="stack"><div class="small muted">Pourquoi tu le rejettes ? L'IA s'en servira pour éviter cette erreur.</div>
+          <div class="chips" id="chips">${reasons.map(r => `<span class="chip">${esc(r)}</span>`).join("")}</div>
+          <input type="text" id="reason" placeholder="Raison (choisis ou écris)">
+          <div class="row"><button class="btn bad" id="do-reject">Rejeter</button><button class="btn ghost" id="cancel-reject">Annuler</button></div></div>` : `
+        <div class="row"><button class="btn ok" id="do-publish">✓ Publier</button><button class="btn bad" id="start-reject">✕ Rejeter</button>
+          ${fb ? `<button class="btn ghost" id="undo">Annuler la décision</button>` : ""}</div>
+        <div class="row"><button class="btn small" id="reveal">Afficher dans l'explorateur</button></div>`) : ""}
+      <div class="spacer"></div>
+      <div class="keys"><kbd>←</kbd> <kbd>→</kbd> clip précédent / suivant · <kbd>P</kbd> publier · <kbd>R</kbd> rejeter · <kbd>Échap</kbd> fermer</div>
+    </div>`;
+  const on = (id, f) => { const el = document.getElementById(id); if (el) el.onclick = f; };
+  $("#kind")?.addEventListener("click", e => { const b = e.target.closest("button"); if (b) { detailKind = b.dataset.k; renderDetail(); } });
+  on("do-publish", () => decide(c, v, "publie"));
+  on("start-reject", () => { rejecting = true; renderDetail(); setTimeout(() => $("#reason")?.focus(), 50); });
+  on("cancel-reject", () => { rejecting = false; renderDetail(); });
+  on("do-reject", () => { const r = $("#reason").value.trim(); if (!r) return toast("Indique une raison", true); decide(c, v, "rejete", r); });
+  on("undo", () => decide(c, v, "aucune"));
+  on("reveal", () => api("/api/open", {path: v.file}));
+  document.querySelectorAll("#chips .chip").forEach(ch => ch.onclick = () => {
+    const inp = $("#reason"); const t = ch.textContent;
+    inp.value = inp.value ? (inp.value.includes(t) ? inp.value : inp.value + ", " + t.toLowerCase()) : t; inp.focus(); });
+  $("#reason")?.addEventListener("keydown", e => { if (e.key === "Enter") $("#do-reject").click(); });
+}
+async function decide(c, v, decision, raison = "") {
+  try {
+    const before = visibleClips(), k = before.findIndex(x => x.index === c.index);
+    await api("/api/feedback", {file: v.file, decision, raison, stem: currentStem, start: c.start, titre: c.titre,
+      type: c.type, text: c.text, duree: v.duree, note: c.note});
+    v.feedback = decision === "aucune" ? null : {decision, raison};
+    rejecting = false;
+    toast(decision === "publie" ? "Publié : servira d'exemple à l'IA" : decision === "rejete" ? "Rejeté : l'IA évitera ce cas" : "Décision annulée");
+    renderClips(); poll(); loadStreamsQuiet();
+    if (decision !== "aucune" && before[k + 1]) { detailIdx = before[k + 1].index; detailKind = "long"; }
+    if (!visibleClips().find(x => x.index === detailIdx)) return closeDetail();
+    renderDetail();
+  } catch (e) { toast(e.message, true); }
+}
+async function loadStreamsQuiet() {
+  try { const d = await api("/api/streams"); streams = d.streams;
+    const todo = streams.reduce((a, s) => a + Math.max(0, s.rendus - s.publies - s.rejetes), 0);
+    $("#nav-todo").hidden = !todo; $("#nav-todo").textContent = todo; } catch {}
+}
+document.addEventListener("keydown", e => {
+  if (detailIdx === null) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") { if (e.key === "Escape") { rejecting = false; renderDetail(); } return; }
+  const vs = visibleClips(), k = vs.findIndex(x => x.index === detailIdx);
+  if (e.key === "Escape") closeDetail();
+  else if (e.key === "ArrowRight" && vs[k + 1]) { detailIdx = vs[k + 1].index; detailKind = "long"; rejecting = false; renderDetail(); }
+  else if (e.key === "ArrowLeft" && k > 0) { detailIdx = vs[k - 1].index; detailKind = "long"; rejecting = false; renderDetail(); }
+  else if (e.key.toLowerCase() === "p") $("#do-publish")?.click();
+  else if (e.key.toLowerCase() === "r") { e.preventDefault(); $("#start-reject")?.click(); }
+  else if (e.key === " ") { const vid = $("#dvid"); if (vid) { e.preventDefault(); vid.paused ? vid.play() : vid.pause(); } }
+});
+
+/* ---------- Réglages ---------- */
+const ENGINE_FIELDS = [
+  ["WATERMARK", "Texte publicitaire", "Affiché pendant tout le clip. Vide = aucun texte.", "text"],
+  ["TITLE", "Titre d'accroche", "Bandeau écrit par l'IA en haut de chaque clip.", "bool"],
+  ["ZOOM", "Zoom sur les réactions", "1 = aucun zoom, 1,12 = zoom léger.", "num", 0.01],
+  ["SHORT_MAX", "Durée max d'un avis ou d'une réaction (s)", "Au-delà, une version courte est rendue en plus.", "num", 1],
+  ["LONG_MAX", "Durée max d'une histoire (s)", "Contexte, action, réaction.", "num", 1],
+  ["CUT_SILENCE", "Couper les silences de plus de (s)", "À l'intérieur des passages gardés.", "num", 0.1],
+  ["RUSH_BEFORE", "Rush avant le moment (s)", "Ce que l'IA de montage peut reprendre avant le moment repéré.", "num", 1],
+  ["RUSH_AFTER", "Rush après le moment (s)", "Et après.", "num", 1],
+  ["VISION", "Vision IA", "L'IA regarde l'écran (fusillades, accidents...). Plus lent, mais repère l'action sans paroles.", "bool"],
+  ["VISION_MIN", "Intensité d'action minimale (0 à 10)", "À partir de laquelle une action devient un clip, même sans paroles.", "num", 1],
+  ["PROMPT_CONTEXT", "Contexte donné à l'IA", "Personnes, jeux, habitudes du stream.", "area"],
+];
+let settingsData = null;
+async function loadSettings() {
+  try {
+    settingsData = await api("/api/settings");
+    const a = settingsData.app;
+    appSettings = a;
+    $("#set-app").innerHTML = `
+      <div class="set"><div class="lbl"><b>Dossier des enregistrements</b><span>Où OBS enregistre tes streams.</span></div>
+        <input type="text" id="s-vod_dir" value="${esc(a.vod_dir)}"><button class="btn small" id="pick-dir">Parcourir…</button></div>
+      <div class="set"><div class="lbl"><b>Clips à rendre par défaut</b><span>Les autres moments restent disponibles (« Rendre 10 de plus »).</span></div>
+        <input type="number" id="s-max_clips" min="0" value="${a.max_clips}"><span></span></div>`;
+    $("#pick-dir").onclick = async () => { try { const d = await api("/api/pick", {folder: true, initial: $("#s-vod_dir").value}); if (d.path) $("#s-vod_dir").value = d.path; } catch (e) { toast(e.message, true); } };
+    $("#set-engine").innerHTML = ENGINE_FIELDS.map(([k, lbl, help, type, step]) => {
+      const f = settingsData.engine[k], v = f.value, changed = JSON.stringify(v) !== JSON.stringify(f.default);
+      const input = type === "bool" ? `<label class="chk"><input type="checkbox" id="e-${k}" ${v ? "checked" : ""}> Activé</label>`
+        : type === "num" ? `<input type="number" id="e-${k}" step="${step}" value="${v}">`
+        : type === "area" ? `<textarea id="e-${k}" rows="5">${esc(v)}</textarea>`
+        : `<input type="text" id="e-${k}" value="${esc(v)}">`;
+      const reset = `<button class="btn small ghost" data-reset="${k}" ${changed ? "" : "disabled"} title="Valeur d'origine : ${esc(JSON.stringify(f.default))}">Défaut</button>`;
+      return type === "area" ? `<div class="set wide"><div class="row"><div class="lbl" style="flex:1"><b>${lbl}</b><span>${help}</span></div>${reset}</div>${input}</div>`
+        : `<div class="set"><div class="lbl"><b>${lbl}</b><span>${help}</span></div>${input}${reset}</div>`;
+    }).join("");
+    document.querySelectorAll("[data-reset]").forEach(b => b.onclick = () => {
+      const k = b.dataset.reset, d = settingsData.engine[k].default, el = document.getElementById("e-" + k);
+      if (el.type === "checkbox") el.checked = d; else el.value = d; b.disabled = true; });
+    const fb = feedbackStats;
+    $("#set-learn").innerHTML = `${fb.publies || 0} clips publiés et ${fb.rejetes || 0} clips rejetés sont donnés à l'IA comme exemples (les 8 plus récents de chaque sorte),
+      pour la notation et le montage des prochains traitements. Ils sont enregistrés dans data\\feedback.json.
+      ${fb.raisons?.length ? `<div class="chips" style="margin-top:10px">${fb.raisons.map(r => `<span class="tag bad">${esc(r)}</span>`).join("")}</div>` : ""}`;
+  } catch (e) { toast(e.message, true); }
+}
+$("#save-settings").onclick = async () => {
+  const engine = {};
+  for (const [k, , , type] of ENGINE_FIELDS) {
+    const el = document.getElementById("e-" + k);
+    engine[k] = type === "bool" ? el.checked : type === "num" ? Number(el.value) : el.value;
+  }
+  try {
+    await api("/api/settings", {app: {vod_dir: $("#s-vod_dir").value.trim(), max_clips: +$("#s-max_clips").value || 0}, engine});
+    toast("Réglages enregistrés"); loadSettings(); $("#opt-max").value = +$("#s-max_clips").value || 0;
+  } catch (e) { toast(e.message, true); }
+};
+
+/* Démarrage */
+(async () => {
+  try { const s = await api("/api/settings"); appSettings = s.app; $("#opt-max").value = s.app.max_clips; } catch {}
+  loadVods(); poll(); loadStreamsQuiet();
+})();
+window.addEventListener("beforeunload", e => {
+  if (jobsCache.some(j => j.status === "en_cours")) { e.preventDefault(); e.returnValue = ""; }
+});
+</script>
+</body>
+</html>

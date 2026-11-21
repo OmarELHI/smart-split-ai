@@ -2,7 +2,8 @@
 
   python engine\\pipeline.py "D:\\Enregistrements OBS\\mon-stream.mp4"
 
-Phases : scenes (en parallele) | audio -> transcription -> reactions -> notation IA -> choix -> rendu.
+Phases : scenes (en parallele) | transcription -> reactions -> vision IA (ce qui se passe a l'ecran)
+-> notation IA -> choix -> montage IA -> rendu.
 Chaque phase enregistre son resultat : si le traitement est interrompu, la relance reprend
 la ou il s'etait arrete (les clips deja rendus ne sont pas refaits).
 Options : --max N (nombre de clips rendus), --no-render, --redo <phase> (refaire une phase), --force (tout refaire)
@@ -12,17 +13,18 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from smartsplit import llm, reactions, scenes, transcribe
+from smartsplit import edit, llm, reactions, scenes, transcribe, vision
 from smartsplit.audio import load_audio
-from smartsplit.config import OUTPUT
-from smartsplit.layout import render_segments
+from smartsplit.config import OUTPUT, VISION, VISION_MIN, VISION_MODEL
 from smartsplit.select import select
 
-PHASES = ["scenes", "transcription", "reactions", "notation", "choix", "rendu"]
+PHASES = ["scenes", "transcription", "reactions", "vision", "notation", "choix", "montage", "rendu"]
 
 
 def fmt(t: float) -> str:
@@ -52,6 +54,10 @@ def main() -> None:
     if not src.exists():
         raise SystemExit(f"Fichier introuvable : {src}")
     redo = set(PHASES) if args.force else set(args.redo)
+    if "scenes" in redo:
+        redo.add("vision")                 # nouvelles images cles
+    if "vision" in redo:
+        redo |= {"notation", "montage"}    # la notation et le montage utilisent la vision
     work = scenes.analysis_dir(src)
     work.mkdir(parents=True, exist_ok=True)
     times: dict[str, float] = {}
@@ -63,7 +69,8 @@ def main() -> None:
         t0 = time.time()
         an = None if "scenes" in redo else scenes.load(src)
         if an is None:
-            an = scenes.analyze(src, progress=lambda m: print(f"[scenes] {m.strip()}"))
+            an = scenes.analyze(src, progress=lambda m: print(f"[scenes] {m.strip()}"),
+                                frames_dir=vision.frames_dir(src) if VISION else None)
             scenes.save(an)
         times["scenes"] = time.time() - t0
         return an
@@ -76,11 +83,17 @@ def main() -> None:
     tr = None if "transcription" in redo else transcribe.load(src)
     audio = None
     if tr is None:
-        audio = load_audio(src)
-        tr = transcribe.transcribe(src, audio=audio, progress=lambda m: print(f"[transcription] {m.strip()}"))
-        transcribe.save(tr)
-        tr = transcribe.load(src)          # recharge avec les corrections appliquees
-        free_gpu()
+        # Whisper tourne dans un processus a part : a sa fin, toute la memoire du GPU est rendue.
+        # (dans le meme processus, CTranslate2 garde sa memoire et Ollama, a l'etroit, devient tres lent)
+        cmd = [sys.executable, "-u", str(Path(__file__).with_name("transcribe.py")), str(src), "--force"]
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             encoding="utf-8", errors="replace")
+        for line in p.stdout:
+            if line.strip():
+                print(f"[transcription] {line.strip()}")
+        if p.wait() != 0:
+            raise SystemExit("La transcription a echoue (voir les messages ci-dessus).")
+        tr = transcribe.load(src)
     times["transcription"] = time.time() - t0
     print(f"[transcription] {len(tr['segments'])} phrases ({times['transcription']:.0f} s)")
 
@@ -96,29 +109,77 @@ def main() -> None:
     times["reactions"] = time.time() - t0
     print(f"[reactions] {len(rx['peaks'])} pics ({times['reactions']:.0f} s)")
 
-    # 4. Notation par l'IA (GPU, Ollama)
+    an = fut_scenes.result()
+    pool.shutdown()
+    print(f"[scenes] {len(an.segments)} passages ({times['scenes']:.0f} s, en parallele)")
+
+    # 4. Vision : ce qui se passe a l'ecran (GPU, Ollama, gemma3 lit les images)
+    vis = None
+    if VISION:
+        t0 = time.time()
+        vis = None if "vision" in redo else vision.load(src)
+        if vis is None:
+            llm.check()
+            partial = vision.load(src, partial=True) if "vision" not in redo else None   # reprise apres coupure
+            try:
+                vis = vision.analyze(src, an.segments, an.duration, resume=partial,
+                                     progress=lambda m: print(f"[vision] {m.strip()}"),
+                                     save_every=lambda w: vision.save(src, w, complete=False))
+                vision.save(src, vis)
+            except vision.VisionUnavailable as e:
+                print(f"[vision] ABANDON : {e}. Suite du traitement sans la vision.")
+                vis = []
+            llm.unload(VISION_MODEL)       # libere le GPU pour gemma3 (notation, montage)
+            redo |= {"notation", "montage"}
+        times["vision"] = time.time() - t0
+        strong = sum(1 for w in vis if w["intensite"] >= VISION_MIN)
+        print(f"[vision] {len(vis)} fenetres decrites, {strong} actions fortes ({times['vision']:.0f} s)")
+
+    # 5. Notation par l'IA (GPU, Ollama)
     t0 = time.time()
     sc = None if "notation" in redo else llm.load(src)
+    if sc is not None and VISION and not sc.get("vision"):
+        sc = None                          # ancienne notation faite sans la vision : on la refait
+        redo.add("montage")
     if sc is None:
         print(f"[notation] modele {llm.check()}")
-        sc = llm.score(tr, progress=lambda m: print(f"[notation] {m.strip()}"))
+        sc = llm.score(tr, progress=lambda m: print(f"[notation] {m.strip()}"), vision=vis)
+        sc["vision"] = bool(vis)
         llm.save(src, sc)
-        llm.unload()                       # libere le GPU pour le rendu
     times["notation"] = time.time() - t0
     print(f"[notation] {len(sc['blocks'])} extraits ({times['notation']:.0f} s)")
 
     # 5. Choix des clips
     t0 = time.time()
-    clips = select(sc["blocks"], tr, rx, tr["duration"])
+    cand = sc["blocks"] + (vision.action_blocks(vis, VISION_MIN) if vis else [])
+    cand.sort(key=lambda b: b["start"])
+    clips = select(cand, tr, rx, tr["duration"])
     (work / "clips.json").write_text(json.dumps(clips, ensure_ascii=False, indent=1), encoding="utf-8")
     times["choix"] = time.time() - t0
     print(f"[choix] {len(clips)} clips proposes")
 
-    an = fut_scenes.result()
-    pool.shutdown()
-    print(f"[scenes] {len(an.segments)} passages ({times['scenes']:.0f} s, en parallele)")
+    # 7. Montage : dans un rush plus long autour de chaque moment, l'IA garde les bons passages,
+    #    coupe les temps morts, place les zooms et ecrit le titre d'accroche
+    t0 = time.time()
+    mpath = work / "clips_montes.json"
+    cached = json.loads(mpath.read_text(encoding="utf-8")) if mpath.exists() else None
+    if cached and all("parts" in c for c in cached) and not ({"montage", "choix", "notation"} & redo):
+        clips = cached
+    else:
+        llm.check()
+        clips = edit.plan_all(clips, tr, tr["duration"], vision=vis,
+                              progress=lambda m: print(f"[montage] {m.strip()}"))
+        kept: list[dict] = []
+        for c in sorted(clips, key=lambda c: -c["score"]):          # supprime les chevauchements crees
+            if not any(c["start"] < k["end"] and k["start"] < c["end"] for k in kept):
+                kept.append(c)
+        clips = kept
+        mpath.write_text(json.dumps(clips, ensure_ascii=False, indent=1), encoding="utf-8")
+    llm.unload()                           # libere le GPU pour le rendu
+    times["montage"] = time.time() - t0
+    print(f"[montage] {len(clips)} clips ({times['montage']:.0f} s)")
 
-    # 6. Rendu
+    # 8. Rendu
     rendered = []
     if not args.no_render:
         t0 = time.time()
@@ -127,17 +188,22 @@ def main() -> None:
         todo = clips[: args.max] if args.max else clips
         for i, c in enumerate(todo, 1):
             st = int(c["start"])
-            dst = out_dir / f"clip{i:02d}_{st // 60:02d}m{st % 60:02d}s_note{c['note']}.mp4"
-            if dst.exists() and "rendu" not in redo:
+            base = f"clip{i:02d}_{st // 60:02d}m{st % 60:02d}s_note{c['note']}"
+            versions = [(base, c["parts"])]
+            if c.get("court_parts"):       # montage long : version courte en plus
+                versions.append((base + "_court", c["court_parts"]))
+            for name, parts in versions:
+                dst = out_dir / f"{name}.mp4"
+                if dst.exists() and "rendu" not in redo:
+                    rendered.append(dst)
+                    continue
+                t1 = time.time()
+                tmp = dst.with_suffix(".part.mp4")
+                edit.render(src, parts, an, tmp, title=c.get("titre", ""))
+                tmp.replace(dst)           # le fichier n'apparait qu'une fois complet
                 rendered.append(dst)
-                continue
-            t1 = time.time()
-            tmp = dst.with_suffix(".part.mp4")
-            render_segments(src, c["start"], c["end"], scenes.segments_for(an, c["start"], c["end"]), tmp,
-                            face_x="auto")
-            tmp.replace(dst)               # le fichier n'apparait qu'une fois complet
-            rendered.append(dst)
-            print(f"[rendu] {i}/{len(todo)} {dst.name} ({time.time() - t1:.0f} s)")
+                print(f"[rendu] {i}/{len(todo)} {dst.name} ({edit.total(parts):.0f} s, "
+                      f"{len(parts)} passages, rendu en {time.time() - t1:.0f} s)")
         times["rendu"] = time.time() - t0
 
     total = time.time() - t_all
@@ -152,8 +218,10 @@ def main() -> None:
             par = " (en parallele)" if k == "scenes" else ""
             print(f"  {k:14s} {times[k]:7.1f} s{par}")
     print("\nClips :")
-    for i, c in enumerate(clips[: len(rendered) or len(clips)], 1):
-        print(f"  {i:2d}. {fmt(c['start'])} -> {fmt(c['end'])}  note {c['note']}/10  {c['type']} : {c['raison'][:60]}")
+    for i, c in enumerate(clips[: args.max or len(clips)], 1):
+        court = f" + courte {edit.total(c['court_parts']):.0f} s" if c.get("court_parts") else ""
+        print(f"  {i:2d}. {fmt(c['start'])}  {c.get('duree', 0):.0f} s en {len(c.get('parts', []))} passages{court}"
+              f"  note {c['note']}/10  {c['type']}  \"{c.get('titre', '')}\"")
     if rendered:
         print(f"\nDossier : {OUTPUT / src.stem}")
 

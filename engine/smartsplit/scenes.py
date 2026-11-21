@@ -143,12 +143,28 @@ def frames_between(src: Path, t0: float, t1: float, fps: float = 4.0):
 
 CAM_MATCH = 0.84     # ressemblance minimale entre une zone du haut de l'image et ta cam
 CAM_GAP = 0.24       # la zone doit ressembler bien plus a la cam que l'image entiere (sinon : full cam)
-FULL_MIN = 0.50      # ressemblance minimale de l'image entiere avec ta cam pour une full cam
+FULL_MIN = 0.65      # ressemblance des couleurs de l'image entiere avec ta cam pour une full cam
+CAM_COLOR_MIN = 0.60 # zone cadree a la place trouvee, aux couleurs de ta cam : cam + jeu meme si la forme ressemble moins
+CAM_RESCUE = 0.60    # ressemblance de forme minimale pour ce rattrapage
+FULL_REFS = 12       # images de ta cam (reparties sur tout le stream) servant a reconnaitre la full cam
 SEARCH_S = 0.5       # echelle de la recherche multi-tailles
 BAND_REL = 0.45      # la cam est cherchee dans les 45 % du haut
 WIDTHS = np.arange(0.14, 0.37, 0.02)   # largeurs de cam essayees (part de la largeur de l'image)
 CAM_ASPECT = 536 / 298   # largeur / hauteur de l'image webcam incrustee (mesuree)
 INSET = 2            # retrait (px a 640) des references pour ne pas inclure le cadre
+
+
+def hs_hist(img: np.ndarray) -> np.ndarray:
+    """Histogramme teinte x saturation : insensible au cadrage, sensible aux couleurs de ta chambre."""
+    if img.shape[1] > 160:
+        img = cv2.resize(img, (160, 90), interpolation=cv2.INTER_AREA)
+    h = cv2.calcHist([cv2.cvtColor(img, cv2.COLOR_BGR2HSV)], [0, 1], None, [12, 6], [0, 180, 0, 256])
+    return (h / max(float(h.sum()), 1.0)).flatten()
+
+
+def hist_sim(a: np.ndarray, b: np.ndarray) -> float:
+    """Part des couleurs communes (intersection d'histogrammes normalises, 0 a 1)."""
+    return float(cv2.compareHist(a, b, cv2.HISTCMP_INTERSECT))
 
 
 def gray(img: np.ndarray) -> np.ndarray:
@@ -187,7 +203,17 @@ class Matcher:
         k = w / (CW - 2 * INSET)          # la reference est la cam rentree de INSET px
         return best, (round(x - INSET * k), round(y - INSET * k), round(w + 2 * INSET * k), round(h + 2 * INSET * k))
 
-    def full(self, thumb: np.ndarray) -> float:
+    full_hists: list = []      # couleurs de ta cam, reparties dans le temps (voir _full_refs)
+
+    def full(self, thumb: np.ndarray, hist: np.ndarray | None = None) -> float:
+        """Ressemblance de l'image entiere avec ta chambre.
+
+        Par les couleurs (teinte, saturation) si des references sont disponibles : les images de jeu,
+        meme sombres ou de nuit, ne depassent pas ~0,45, une full cam est au-dessus de 0,8.
+        Sinon, repli sur la ressemblance en niveaux de gris (moins fiable).
+        """
+        if hist is not None and self.full_hists:
+            return max(hist_sim(hist, r) for r in self.full_hists)
         return max(float(cv2.matchTemplate(thumb, r, cv2.TM_CCOEFF_NORMED)[0, 0]) for r in self.thumbs)
 
 
@@ -198,7 +224,9 @@ class Sample:
     still: float | None = None
     band: np.ndarray | None = None
     thumb: np.ndarray | None = None
+    hist: np.ndarray | None = None
     crops: dict = field(default_factory=dict)
+    chists: dict = field(default_factory=dict)   # couleurs des zones cadrees (candidates a etre ta cam)
     cam_score: float = 0.0
     full_score: float = 0.0
     rect: tuple | None = None
@@ -263,6 +291,39 @@ def _pick_refs(samples: list[Sample], boot: list[tuple[int, int, float]], n: int
     return [found[i] for i in sorted(set(idx))]
 
 
+def _full_refs(samples: list[Sample], n: int = FULL_REFS) -> list[np.ndarray]:
+    """Couleurs de ta cam a des moments repartis sur tout le stream (l'eclairage change le soir)."""
+    good = []
+    for s in samples:
+        if s.cam_score < 0.9 or s.rect is None:
+            continue
+        for (x, y), h in s.chists.items():
+            if abs(x - s.rect[0]) <= 8 and abs(y - s.rect[1]) <= 8:
+                good.append((s.t, s.cam_score, h))
+                break
+    if not good:
+        return []
+    t0, t1 = good[0][0], good[-1][0] + 1e-6
+    bins: dict[int, tuple] = {}
+    for t, sc, h in good:
+        k = int((t - t0) / (t1 - t0) * n)
+        if k not in bins or sc > bins[k][0]:
+            bins[k] = (sc, h)
+    return [h for _, h in bins.values()]
+
+
+def _cam_colors(s: Sample, matcher: "Matcher") -> tuple[float, tuple | None]:
+    """Zone cadree (bord rose/bleu marine) dont les couleurs ressemblent le plus a ta cam : (score, rectangle)."""
+    if s.cam_score < CAM_RESCUE or not matcher.full_hists:
+        return 0.0, None
+    best, pos = 0.0, None
+    for (x, y), h in s.chists.items():
+        v = max(hist_sim(h, r) for r in matcher.full_hists)
+        if v > best:
+            best, pos = v, (x, y, CW, CH)
+    return best, pos
+
+
 def _decide(cam_score: float, full_score: float) -> str:
     if cam_score >= CAM_MATCH and cam_score - full_score >= CAM_GAP:
         return "cam_jeu"
@@ -317,16 +378,19 @@ def _smooth(samples: list[Sample]) -> None:
             samples[i].scene, samples[i].cam = samples[i - 1].scene, samples[i - 1].cam
 
 
-def _frame_label(img: np.ndarray, matcher: Matcher | None, cams) -> str:
+def _frame_label(img: np.ndarray, matcher: Matcher | None, cams, remap=None) -> str:
     if matcher is None:
         return "?"
     g = gray(img)
     sc, rect = matcher.cam(Matcher.band(g))
-    scene = _decide(sc, matcher.full(cv2.resize(g, (64, 36), interpolation=cv2.INTER_AREA)))
-    return f"cam_jeu:{_nearest_cam(rect, cams)}" if scene == "cam_jeu" else scene
+    scene = _decide(sc, matcher.full(cv2.resize(g, (64, 36), interpolation=cv2.INTER_AREA), hs_hist(img)))
+    if scene != "cam_jeu":
+        return scene
+    i = _nearest_cam(rect, cams)
+    return f"cam_jeu:{remap[i] if (remap and i is not None) else i}"
 
 
-def _refine(src: Path, a: Sample, b: Sample, matcher, cams, fps: float = 4.0) -> float:
+def _refine(src: Path, a: Sample, b: Sample, matcher, cams, remap=None, fps: float = 4.0) -> float:
     """Instant precis du changement de scene entre deux images cles.
 
     Chaque image intermediaire est classee "comme a" ou "comme b" ; on garde la coupure
@@ -338,7 +402,7 @@ def _refine(src: Path, a: Sample, b: Sample, matcher, cams, fps: float = 4.0) ->
         return b.t
     lab_a, lab_b = _label(a), _label(b)
     if matcher is not None:
-        is_a = [(lambda lab: lab == lab_a if lab in (lab_a, lab_b) else None)(_frame_label(img, matcher, cams))
+        is_a = [(lambda lab: lab == lab_a if lab in (lab_a, lab_b) else None)(_frame_label(img, matcher, cams, remap))
                 for _, img in frames]
     else:
         ga, gb = small_gray(frames[0][1]), small_gray(frames[-1][1])
@@ -353,54 +417,83 @@ def _refine(src: Path, a: Sample, b: Sample, matcher, cams, fps: float = 4.0) ->
 
 
 def refine_cam_rect(src: Path, t: float, rect640: tuple[int, int, int, int]) -> Rect:
-    """Bords exacts de la cam en pleine resolution, chaque bord cherche separement."""
+    """Rectangle exact de la cam : on cherche, autour de la zone reconnue, le rectangle au format de la webcam
+    dont les 4 bords sont les plus nets. La taille peut varier de 0,6 a 1,7 fois la zone reconnue : la
+    reconnaissance par le contenu trouve parfois seulement une partie de la cam."""
     info = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                            "stream=width,height", "-of", "csv=p=0", str(src)], capture_output=True, text=True)
-    w, h = (int(v) for v in info.stdout.strip().split(",")[:2])
+    W, H = (int(v) for v in info.stdout.strip().split(",")[:2])
     p = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", str(src), "-frames:v", "1",
-                        "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True)
+                        "-vf", "scale=1280:720", "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True)
+    w, h = 1280, 720
     g = np.frombuffer(p.stdout, np.uint8)[: w * h].reshape(h, w).astype(np.float32)
     gx = np.abs(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3))
     gy = np.abs(cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3))
-    sx, sy = w / AW, h / AH
-    x0, y0 = rect640[0] * sx, rect640[1] * sy
-    x1, y1 = x0 + rect640[2] * sx, y0 + rect640[3] * sy
-    m = int(12 * sx)                      # marge de recherche de chaque bord
-    ya, yb = int(y0 + (y1 - y0) * 0.2), int(y0 + (y1 - y0) * 0.8)
-    xa, xb = int(x0 + (x1 - x0) * 0.2), int(x0 + (x1 - x0) * 0.8)
+    # sommes cumulees : moyenne d'un bord horizontal ou vertical en temps constant
+    cy = np.concatenate([np.zeros((h, 1), np.float32), np.cumsum(gy, axis=1)], axis=1)   # par ligne
+    cx = np.concatenate([np.zeros((1, w), np.float32), np.cumsum(gx, axis=0)], axis=0)   # par colonne
+    k = w / AW
+    rx, ry, rw, rh = rect640[0] * k, rect640[1] * k, rect640[2] * k, rect640[3] * k
+    best, best_r = -1.0, (int(rx), int(ry), int(rw), int(rh))
+    for ww in range(int(rw * 0.6), int(rw * 1.7) + 1, 2):
+        hh = int(round(ww / CAM_ASPECT))
+        if ww >= w - 2 or hh >= h - 2:
+            continue
+        # le rectangle cherche doit recouvrir l'essentiel de la zone reconnue
+        xs = np.arange(max(1, int(rx + rw * 0.5 - ww)), min(w - ww - 1, int(rx + rw * 0.5)) + 1)
+        ys = np.arange(max(1, int(ry + rh * 0.5 - hh)), min(h - hh - 1, int(ry + rh * 0.5)) + 1)
+        if len(xs) == 0 or len(ys) == 0:
+            continue
+        X, Y = np.meshgrid(xs, ys)
+        top = (cy[Y, X + ww] - cy[Y, X]) / ww
+        bot = (cy[Y + hh, X + ww] - cy[Y + hh, X]) / ww
+        lef = (cx[Y + hh, X] - cx[Y, X]) / hh
+        rig = (cx[Y + hh, X + ww] - cx[Y, X + ww]) / hh
+        sc = np.minimum(np.minimum(top, bot), np.minimum(lef, rig))
+        i = int(sc.argmax())
+        if sc.flat[i] > best:
+            best, best_r = float(sc.flat[i]), (int(X.flat[i]), int(Y.flat[i]), ww, hh)
+    x, y, ww, hh = best_r
+    ins = max(3, round(ww * 0.018))         # retrait : aucune trace du cadre rose
+    return Rect((x + ins) / w, (y + ins) / h, (ww - 2 * ins) / w, (hh - 2 * ins) / h)
 
-    def best_col(c):
-        cols = range(max(1, int(c) - m), min(w - 1, int(c) + m + 1))
-        return max(cols, key=lambda c_: gx[ya:yb, c_].mean())
 
-    L, R = best_col(x0), best_col(x1)
-    # la cam garde le format de la webcam (environ 16:9) : on cherche le haut et le bas ensemble,
-    # pour ne pas confondre le bas de la cam avec le bandeau du pseudo juste dessous
-    rows = gy[:, xa:xb].mean(axis=1)
-    h0 = (R - L) / CAM_ASPECT
-    best, T, B = -1.0, int(y0), int(y1)
-    for hh in range(int(h0 * 0.97), int(h0 * 1.03) + 1):
-        for t in range(max(1, int(y0) - m), min(h - hh - 1, int(y0) + m + 1)):
-            sc = rows[t] + rows[t + hh]
-            if sc > best:
-                best, T, B = sc, t, t + hh
-    ins = max(1, round(CAM_INSET * h))
-    L, T, R, B = L + ins, T + ins, R - ins, B - ins
-    return Rect(L / w, T / h, (R - L) / w, (B - T) / h)
+def _dedupe_cams(rects: list[Rect]) -> tuple[list[Rect], list[int]]:
+    """Fusionne les positions de cam qui designent en fait le meme rectangle."""
+    uniq: list[Rect] = []
+    mapping = []
+    for r in rects:
+        for j, u in enumerate(uniq):
+            ix = max(0, min(r.x + r.w, u.x + u.w) - max(r.x, u.x))
+            iy = max(0, min(r.y + r.h, u.y + u.h) - max(r.y, u.y))
+            inter = ix * iy
+            if inter / (r.w * r.h + u.w * u.h - inter) > 0.8:
+                mapping.append(j)
+                break
+        else:
+            mapping.append(len(uniq))
+            uniq.append(r)
+    return uniq, mapping
 
 
-def analyze(src: Path, progress=print) -> Analysis:
+def analyze(src: Path, progress=print, frames_dir: Path | None = None) -> Analysis:
+    """frames_dir : si donne, chaque image cle y est aussi enregistree en JPG (utilisee par la vision)."""
     src = Path(src)
     samples: list[Sample] = []
+    if frames_dir is not None:
+        Path(frames_dir).mkdir(parents=True, exist_ok=True)
     prev_gray = None
     for n, (ts, img) in enumerate(keyframes(src)):
         if ts is None:
             continue
+        if frames_dir is not None:
+            cv2.imwrite(str(Path(frames_dir) / f"{round(ts * 10)}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 80])
         cands = candidates(img)
         g = gray(img)
         sg = small_gray(img)
         s = Sample(t=ts, cands=cands, still=stillness(sg, prev_gray) if prev_gray is not None else None,
-                   band=Matcher.band(g), thumb=cv2.resize(g, (64, 36), interpolation=cv2.INTER_AREA))
+                   band=Matcher.band(g), thumb=cv2.resize(g, (64, 36), interpolation=cv2.INTER_AREA),
+                   hist=hs_hist(img))
         if samples and s.still is not None:
             p = samples[-1]
             p.still = s.still if p.still is None else min(p.still, s.still)
@@ -408,6 +501,7 @@ def analyze(src: Path, progress=print) -> Analysis:
         for x, y, e, r in cands[:3]:
             if e >= EDGE_MIN and r >= RING_MIN:
                 s.crops[(x, y)] = g[y + INSET:y + CH - INSET, x + INSET:x + CW - INSET].copy()
+                s.chists[(x, y)] = hs_hist(img[y + INSET:y + CH - INSET, x + INSET:x + CW - INSET])
         samples.append(s)
         if n % 200 == 0:
             progress(f"  analyse : {ts / 60:.1f} min")
@@ -426,20 +520,31 @@ def analyze(src: Path, progress=print) -> Analysis:
     else:
         for s in samples:
             s.cam_score, s.rect = matcher.cam(s.band)
-            s.full_score = matcher.full(s.thumb)
+        matcher.full_hists = _full_refs(samples)
+        progress(f"  {len(matcher.full_hists)} references de couleurs pour la full cam")
+        for s in samples:
+            s.full_score = matcher.full(s.thumb, s.hist)
             s.scene = _decide(s.cam_score, s.full_score)
+            if s.scene == "jeu":
+                v, pos = _cam_colors(s, matcher)
+                if v >= CAM_COLOR_MIN:     # cam bien la (cadre + couleurs de ta chambre), forme moins nette
+                    s.scene, s.rect = "cam_jeu", pos
         cams = _cluster_rects(samples)
         for s in samples:
             s.cam = _nearest_cam(s.rect, cams) if s.scene == "cam_jeu" else None
+    # rectangles exacts des positions de cam, en fusionnant celles qui designent la meme cam
+    cam_rects, remap = _dedupe_cams([refine_cam_rect(src, c[4], c[:4]) for c in cams])
+    for s in samples:
+        if s.cam is not None:
+            s.cam = remap[s.cam]
     _smooth(samples)
 
     progress("  affinage des changements de scene")
-    cam_rects = [refine_cam_rect(src, c[4], c[:4]) for c in cams]
     segs: list[Segment] = []
     start = 0.0
     for a, b in zip(samples, samples[1:]):
         if _label(a) != _label(b):
-            cut = _refine(src, a, b, matcher, cams)
+            cut = _refine(src, a, b, matcher, cams, remap)
             segs.append(Segment(start, cut, a.scene, list(asdict(cam_rects[a.cam]).values()) if a.cam is not None else None))
             start = cut
     last = samples[-1]

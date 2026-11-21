@@ -3,3 +3,6 @@
 faster-whisper
 opencv-python
 numpy
+transformers
+sentencepiece
+protobuf

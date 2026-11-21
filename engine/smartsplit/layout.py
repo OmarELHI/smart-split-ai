@@ -4,7 +4,9 @@ import subprocess
 from enum import Enum
 from pathlib import Path
 
-from .config import BOTTOM_MARGIN, CAM_SHARE, CAM_TOP_RIGHT, GAME_RATIO, OUT_H, OUT_W, Rect
+from . import watermark
+from .audio import mix_track
+from .config import BOTTOM_MARGIN, CAM_SHARE, CAM_TOP_RIGHT, GAME_RATIO, OUT_H, OUT_W, TITLE_Y, Rect
 
 
 class Scene(str, Enum):
@@ -93,7 +95,9 @@ def _build_filter(scene: Scene, src_w: int, src_h: int, cam: Rect, face_x: float
         cam_px = cam.to_px(src_w, src_h)
         cx, cy, cw, ch = cam_px
         # zone a eviter : cam + cadre rose + pseudo sous la cam
-        avoid = (cx - 12, cy - 12, cw + 24, ch + _even(src_h * 0.035) + 12)
+        # zone a eviter : cam + cadre rose (large marge) + pseudo sous la cam
+        mx, my = _even(src_w * 0.02), _even(src_h * 0.02)
+        avoid = (cx - mx, cy - my, cw + 2 * mx, ch + my + _even(src_h * 0.06))
         gx, gy, gw, gh = game_crop(src_w, src_h, game_ratio, avoid)
         bw, bx = _center_crop_width(src_w, src_h, OUT_W / OUT_H)   # fond : centre de l'image en 9:16
         return (
@@ -131,6 +135,27 @@ def _face_x(src: Path, start: float, end: float, src_w: int, src_h: int, face_x)
         return 0.5
 
 
+def _watermark(vf: str, title: str | None = None, zoom: float = 1.0) -> tuple[list[str], str, str]:
+    """Entrees supplementaires, graphe et etiquette de sortie : zoom eventuel, puis titre d'accroche
+    et texte publicitaire par-dessus (ils ne zooment pas)."""
+    label, inputs, idx = "v", [], 1
+    if zoom > 1.001:
+        vf += f";[v]crop=iw/{zoom:.3f}:ih/{zoom:.3f},scale={OUT_W}:{OUT_H},setsar=1[vz]"
+        label = "vz"
+    if title:
+        png = watermark.title_png(title)
+        if png is not None:
+            inputs += ["-i", str(png)]
+            vf += f";[{label}][{idx}:v]overlay=(W-w)/2:H*{TITLE_Y}-h/2:format=auto[vt]"
+            label, idx = "vt", idx + 1
+    wm = watermark.png()
+    if wm is not None:
+        inputs += ["-i", str(wm)]
+        vf = watermark.apply(vf, idx, label_in=label)
+        label = "vw"
+    return inputs, vf, f"[{label}]"
+
+
 def _codec(encoder: str) -> tuple[list[str], list[str]]:
     if encoder == "h264_nvenc":
         return ["-hwaccel", "cuda"], ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"]
@@ -139,7 +164,8 @@ def _codec(encoder: str) -> tuple[list[str], list[str]]:
 
 def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
                 cam: Rect = CAM_TOP_RIGHT, face_x: float | str = 0.5, encoder: str = "h264_nvenc",
-                game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN) -> Path:
+                game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN,
+                title: str | None = None, zoom: float = 1.0) -> Path:
     """Rend le passage [start, end] de la source en clip vertical MP4."""
     info = probe(src)
     if not 0 <= start < end <= info["duration"] + 0.01:
@@ -152,16 +178,18 @@ def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
     out.parent.mkdir(parents=True, exist_ok=True)
     hw, venc = _codec(encoder)
 
+    wm_in, vf, vout = _watermark(vf, title, zoom)
+
     if out.suffix.lower() == ".png":  # apercu : une seule image
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", str(src),
-               "-filter_complex", vf, "-map", "[v]", "-frames:v", "1", str(out)]
+               *wm_in, "-filter_complex", vf, "-map", vout, "-frames:v", "1", str(out)]
         subprocess.run(cmd, check=True)
         return out
 
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src),
-        "-filter_complex", vf, "-map", "[v]", "-map", "0:a?",
+        *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src), *wm_in,
+        "-filter_complex", vf, "-map", vout, "-map", f"0:a:{mix_track(src)}?",
         *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(out),
     ]
@@ -171,7 +199,8 @@ def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
 
 def render_segments(src: Path, start: float, end: float, pieces: list, out: Path,
                     face_x: float | str = 0.5, encoder: str = "h264_nvenc",
-                    game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN) -> Path:
+                    game_ratio: float = GAME_RATIO, bottom_margin: float = BOTTOM_MARGIN,
+                    title: str | None = None, zoom: float = 1.0) -> Path:
     """Rend [start, end] en changeant de mise en page a chaque changement de scene.
 
     pieces : liste de (debut, fin, scene, cam) en secondes absolues, issue de scenes.segments_for().
@@ -181,7 +210,7 @@ def render_segments(src: Path, start: float, end: float, pieces: list, out: Path
     if len(pieces) == 1:
         a, b, scene, cam = pieces[0]
         return render_clip(src, start, end, Scene(scene), out, cam or CAM_TOP_RIGHT, face_x, encoder,
-                           game_ratio, bottom_margin)
+                           game_ratio, bottom_margin, title, zoom)
     info = probe(src)
     w, h, k = info["width"], info["height"], len(pieces)
     parts = [f"[0:v]format=yuv420p,split={k}" + "".join(f"[i{n}]" for n in range(k)) + ";"]
@@ -191,12 +220,13 @@ def render_segments(src: Path, start: float, end: float, pieces: list, out: Path
         parts.append(build_filter(Scene(scene), w, h, cam, fx, game_ratio, bottom_margin,
                                   inp=f"t{n}", out=f"o{n}", tag=f"p{n}") + ";")
     parts.append("".join(f"[o{n}]" for n in range(k)) + f"concat=n={k}:v=1:a=0[v]")
+    wm_in, graph, vout = _watermark("".join(parts), title, zoom)
     out.parent.mkdir(parents=True, exist_ok=True)
     hw, venc = _codec(encoder)
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src),
-        "-filter_complex", "".join(parts), "-map", "[v]", "-map", "0:a?",
+        *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src), *wm_in,
+        "-filter_complex", graph, "-map", vout, "-map", f"0:a:{mix_track(src)}?",
         *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(out),
     ]

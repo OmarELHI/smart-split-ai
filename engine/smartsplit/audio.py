@@ -9,9 +9,30 @@ import numpy as np
 SR = 16000  # frequence attendue par Whisper
 
 
-def load_audio(src: Path, sr: int = SR) -> np.ndarray:
-    """Audio mono en int16 (2 octets par echantillon : environ 580 Mo pour 5 h a 16 kHz)."""
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "1",
+def audio_tracks(src: Path) -> int:
+    """Nombre de pistes audio de la video."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
+                          "-of", "csv=p=0", str(src)], capture_output=True, text=True).stdout
+    return len([l for l in out.splitlines() if l.strip()])
+
+
+def mic_track(src: Path) -> int:
+    """Piste a analyser (voix seule). Avec plusieurs pistes OBS, le micro est sur la piste au plus petit
+    numero (ex. 5) et le melange complet sur la derniere (ex. 6) : le micro est donc la 1re piste du fichier.
+    Avec une seule piste (micro + jeu melanges), c'est elle."""
+    return 0
+
+
+def mix_track(src: Path) -> int:
+    """Piste utilisee pour le son des clips : la derniere (melange complet)."""
+    return max(0, audio_tracks(src) - 1)
+
+
+def load_audio(src: Path, sr: int = SR, track: int | None = None) -> np.ndarray:
+    """Audio mono en int16 (2 octets par echantillon : environ 580 Mo pour 5 h a 16 kHz).
+    Par defaut, la piste du micro si l'enregistrement en a une a part."""
+    track = mic_track(src) if track is None else track
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(src), "-map", f"0:a:{track}", "-vn", "-ac", "1",
            "-ar", str(sr), "-f", "s16le", "-"]
     p = subprocess.run(cmd, capture_output=True, check=True)
     return np.frombuffer(p.stdout, dtype=np.int16)

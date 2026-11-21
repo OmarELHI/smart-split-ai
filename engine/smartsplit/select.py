@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import math
 
-CLIP_MIN, CLIP_MAX = 15.0, 60.0
+from .config import LONG_MAX, SHORT_MAX
+
+CLIP_MIN, CLIP_MAX = 15.0, SHORT_MAX   # le montage peut ensuite allonger une histoire jusqu'a LONG_MAX
 PER_HOUR = 10          # minimum de clips par heure
-NOTE_MIN = 5           # note minimale d'un extrait pour devenir un clip (si assez de clips)
+NOTE_MIN = 7           # note minimale d'un extrait pour devenir un clip (completee jusqu'a PER_HOUR si besoin)
 W_LLM, W_AUDIO = 0.8, 0.2
 
 
@@ -80,3 +82,32 @@ def select(blocks: list[dict], transcript: dict, reactions: dict | None, duratio
                       "raison": b["raison"], "score": b["final"], "text": b["text"]})
     clips.sort(key=lambda c: -c["score"])
     return clips
+
+
+def add_preroll(clips: list[dict], transcript: dict) -> list[dict]:
+    """Ajoute avant le clip le passage sans paroles transcrites qui le precede (jusqu'a 8 s pour une reaction).
+
+    Une reaction repond souvent a quelque chose que la transcription ne contient pas : une replique de
+    personnage, un bruit, une action en jeu. Ce moment se trouve dans le "trou" juste avant ta premiere phrase.
+    """
+    from .transcribe import sentences
+    sents = sentences(transcript)
+    out = []
+    for c in clips:
+        prev = [s for s in sents if s["end"] <= c["start"] + 0.3]
+        prev_end = prev[-1]["end"] if prev else 0.0
+        gap = max(0.0, c["start"] - prev_end - 0.4)
+        reaction = c.get("type") in ("reaction", "drole")
+        add = min(gap, 8.0 if reaction else 1.5)
+        cap = LONG_MAX if c["end"] - c["start"] > SHORT_MAX + 2 else SHORT_MAX + 2
+        add = min(add, max(0.0, cap - (c["end"] - c["start"])))      # reste sous la duree maximale
+        c2 = {**c, "start": round(max(0.0, c["start"] - add), 2)} if add > 0.2 else dict(c)
+        if c.get("court"):                                             # meme regle pour la version courte
+            k = c["court"]
+            prev = [s for s in sents if s["end"] <= k["start"] + 0.3]
+            gap = max(0.0, k["start"] - (prev[-1]["end"] if prev else 0.0) - 0.4)
+            add = min(gap, 8.0 if reaction else 1.5, max(0.0, SHORT_MAX + 2 - (k["end"] - k["start"])))
+            if add > 0.2:
+                c2["court"] = {**k, "start": round(max(0.0, k["start"] - add), 2)}
+        out.append(c2)
+    return out
