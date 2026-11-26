@@ -19,16 +19,17 @@ BOTTOM_MARGIN = 0.0    # espace flou sous le jeu, en part de la hauteur (0 = jeu
 
 # Texte publicitaire affiche pendant tout le clip (comme dans ton montage CapCut). "" = aucun texte.
 WATERMARK = "Twitch : OmarELHI"
-WATERMARK_Y = 0.513          # centre du texte, en part de la hauteur (0.513 = haut de la zone jeu)
-WATERMARK_SIZE = 76          # taille de police en pixels (pour une sortie 1080x1920)
+WATERMARK_Y = 0.15           # centre du texte : juste sous le titre, au-dessus de ta tete (cam + jeu comme full cam)
+WATERMARK_SIZE = 56          # taille de police en pixels (pour une sortie 1080x1920)
+WATERMARK_OPACITY = 0.6      # 1 = opaque, 0 = invisible
 WATERMARK_COLOR = "E25993"   # contour et ombre roses, texte blanc
 WATERMARK_IMAGE = ""         # chemin d'un PNG transparent 1080 px de large a utiliser a la place (ex. exporte de CapCut)
 
 # Titre d'accroche (bandeau blanc, texte noir) ecrit par l'IA pour chaque clip, comme sur les clips GTA qui marchent
 TITLE = True
-TITLE_Y = 0.068              # centre du bandeau : dans la bande floue du haut, sans cacher ton visage
-TITLE_SIZE = 58              # taille de police en pixels
-TITLE_MAX_CHARS = 24         # longueur maximale d'une ligne
+TITLE_Y = 0.075              # haut du bandeau : sous la barre du haut de TikTok, sans coller au bord
+TITLE_SIZE = 54              # taille de police en pixels
+TITLE_MAX_CHARS = 22         # longueur visee d'une ligne (2 lignes maximum)
 
 # Montage : le choix garde un "rush" plus long autour du moment, puis l'IA y choisit les passages a garder
 RUSH_BEFORE = 60.0           # secondes gardees avant le moment repere
@@ -47,6 +48,16 @@ VISION_WINDOW = 30.0
 VISION_BACKEND = "ollama"  # "ollama" : un modele decrit les images (VISION_MODEL) ; "clip" : SigLIP, tres rapide mais rate les actions
 VISION_MODEL = "qwen2.5vl:7b"   # 0,6 s par image sur la RTX 5070 (gemma3:12b : plus d'une minute)
 VISION_MIN = 7       # intensite a partir de laquelle une action devient un clip candidat, meme sans paroles
+MISSION_RECAPS = True  # une video resume par mission (nom lu en rose en bas a droite de l'ecran)
+MISSION_MIN = 180.0    # duree minimale d'une mission pour en faire un resume (s)
+RECAP_MAX = 60.0       # duree visee d'un resume (s)
+CAM_BONUS = 0.15     # bonus de score pour un clip ou ta cam est visible (cam + jeu ou full cam) tout du long
+
+# Tendances : ce qui marche sur YouTube Shorts et TikTok autour du jeu, donne a l'IA pour choisir les clips
+TREND_GAME = "GTA 6"
+TREND_DAYS = 3       # mise a jour automatique tous les 3 jours
+TREND_TIKTOK = ["jltomylive", "saabgta", "jlnohaa", "clip.gods16"]   # comptes de clips TikTok a suivre
+VISION_CLIPS = False # clips sur la vision seule (sans reaction d'Omar) : 13 rejets sur 13, desactive
 
 # Vocabulaire propre a tes streams, donne a Whisper (option "hotwords").
 # Desactive : teste le 19/11/2026, il n'a pas corrige "GTA 6" et a degrade le decoupage en phrases.
@@ -126,8 +137,8 @@ CAM_TOP_RIGHT = Rect(1956 / 2560, 55 / 1440, 530 / 2560, 292 / 1440)
 
 # Reglages modifies depuis l'application (data/settings.json, section "engine") : ils remplacent les valeurs ci-dessus.
 SETTINGS_FILE = DATA / "settings.json"
-EDITABLE = ("WATERMARK", "TITLE", "ZOOM", "SHORT_MAX", "LONG_MAX", "CUT_SILENCE", "RUSH_BEFORE", "RUSH_AFTER",
-            "VISION", "VISION_MIN", "PROMPT_CONTEXT")
+EDITABLE = ("WATERMARK", "WATERMARK_OPACITY", "WATERMARK_Y", "TITLE", "ZOOM", "SHORT_MAX", "LONG_MAX", "CUT_SILENCE", "RUSH_BEFORE", "RUSH_AFTER",
+            "VISION", "VISION_CLIPS", "VISION_MIN", "CAM_BONUS", "TREND_GAME", "MISSION_RECAPS", "PROMPT_CONTEXT")
 DEFAULTS = {k: globals()[k] for k in EDITABLE}
 
 

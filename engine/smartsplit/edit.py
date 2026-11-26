@@ -30,11 +30,15 @@ Monte un clip TikTok qui retient l'attention du debut a la fin, comme les clips 
 - un avis ou une reaction seule : 20 a {short} s au total ; une histoire en jeu (contexte, action,
   rebondissements, reactions) : jusqu'a {long} s ;
 - zoom = true pour les passages ou Omar reagit fort (surprise, cri, rire, choc) ;
-- titre : 3 a 8 mots en francais, qui raconte la situation ou la reaction comme un spectateur la dirait
-  (ex. "Alors la je m'attendais pas a ca", "Le yeti m'a fait la pire peur de ma vie", "POV: GTA 6 te
-  fait pleurer"). Pas de hashtag, pas de nom de streamer, pas de guillemets ;
+- titre : 3 a 8 mots en francais, qui raconte CE moment precis comme un spectateur le dirait. Il reprend un
+  element concret du clip : une phrase forte d'Omar (citee telle quelle), ce qu'on voit, ce qui arrive
+  (ex. "Alors la je m'attendais pas a ca", "Le yeti m'a fait la pire peur de ma vie", "Un tigre ?! J'ai
+  tire sans faire expres"). INTERDIT : commencer par "Quand", les formules qui iraient a n'importe quel
+  clip ("GTA 6 te surprend", "c'est le chaos", "devient un delire"), inventer une poursuite ou une action
+  qui n'est pas dans les phrases. Pas de hashtag, pas de nom de streamer, pas de guillemets ;
 - si le total depasse {short} s, donne aussi "court" : les passages d'une version de {short} s maximum
   centree sur le moment le plus fort. Sinon, "court" est une liste vide.
+"debut" et "fin" sont les NUMEROS de phrase entre crochets (ex. 12), jamais les secondes.
 Les reperes "(action a l'ecran)" permettent de couper hors des phrases.
 Reponds uniquement en JSON."""
 
@@ -60,10 +64,23 @@ def _lines(sents: list[dict], a: float, b: float, with_marks: bool) -> list[dict
     return near
 
 
+def _index(lines: list[dict], v) -> int:
+    """Numero de phrase. L'IA renvoie parfois l'instant en secondes au lieu du numero : on le convertit."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return -1
+    if 0 <= v < len(lines) and v == int(v):
+        return int(v)
+    if lines and lines[0]["start"] - 10 <= v <= lines[-1]["end"] + 10:
+        return min(range(len(lines)), key=lambda k: abs(lines[k]["start"] - v))
+    return -1
+
+
 def _parts(lines: list[dict], items: list[dict], a: float, b: float) -> list[dict]:
     out = []
     for it in items:
-        i, j = int(it.get("debut", -1)), int(it.get("fin", -1))
+        i, j = _index(lines, it.get("debut")), _index(lines, it.get("fin"))
         if not (0 <= i <= j < len(lines)):
             continue
         s = max(a, lines[i]["start"] - 0.25)
@@ -105,6 +122,40 @@ def tighten(parts: list[dict], words: list[dict], vision: list[dict] | None) -> 
     return out
 
 
+_GENERIC = ("quand ", "gta 6 te ", "le jeu te ", "c'est le chaos", "devient un delire", "devient un délire",
+            "te surprend", "te met dans", "te fait ")
+
+
+def _generic(titre: str) -> bool:
+    t = titre.lower()
+    return not t or t.startswith("quand") or any(g in t for g in _GENERIC[1:])
+
+
+def _retitle(lines: list[dict], passages: list[dict], bad: str, timeout: float) -> str:
+    """Titre generique : on redemande un titre a partir des phrases gardees seulement."""
+    keep = []
+    for it in passages:
+        i, j = int(it.get("debut", -1)), int(it.get("fin", -1))
+        keep += [lines[k]["text"] for k in range(max(0, i), min(len(lines), j + 1))]
+    if not keep:
+        return ""
+    body = json.dumps({"model": LLM_MODEL, "stream": False, "keep_alive": "5m",
+                       "format": {"type": "object", "properties": {"titre": {"type": "string"}}, "required": ["titre"]},
+                       "options": {"temperature": 0.3, "num_ctx": 4096},
+                       "messages": [{"role": "user", "content":
+                                     "Voici ce que dit Omar, streamer GTA 6, dans un clip TikTok :\n" + "\n".join(keep)[:3000]
+                                     + f"\n\nLe titre \"{bad}\" a ete refuse car trop general. Ecris un titre de 3 a 8 mots "
+                                       "qui reprend un element concret de ces phrases (idealement une phrase forte d'Omar, "
+                                       "citee telle quelle). Il ne commence pas par \"Quand\" et n'invente rien. JSON."}]}).encode()
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            t = str(json.loads(json.loads(r.read())["message"]["content"]).get("titre", "")).strip().strip('"')
+    except Exception:  # noqa: BLE001
+        return ""
+    return "" if _generic(t) else t
+
+
 def plan(clip: dict, sents: list[dict], words: list[dict], duration: float,
          vision: list[dict] | None = None, timeout: float = 180) -> dict:
     """Plan de montage d'un clip : {"titre", "parts", "court", "montage"} ajoutes au clip."""
@@ -112,7 +163,7 @@ def plan(clip: dict, sents: list[dict], words: list[dict], duration: float,
     lines = _lines(sents, a, b, bool(clip.get("vision")))
     if len(lines) < 2:
         return {**clip, "parts": [{"start": clip["start"], "end": clip["end"], "zoom": False}], "titre": ""}
-    text = "\n".join(f"[{i}] {s['start']:.0f}s : {s['text']}" for i, s in enumerate(lines))
+    text = "\n".join(f"[{i}] ({s['start']:.0f} s) {s['text']}" for i, s in enumerate(lines))
     user = (f"Moment repere entre {clip['start']:.0f}s et {clip['end']:.0f}s (raison : {clip['raison']}).\n\n"
             f"Phrases du rush :\n{text}")
     if vision:
@@ -132,15 +183,24 @@ def plan(clip: dict, sents: list[dict], words: list[dict], duration: float,
     except Exception:  # noqa: BLE001
         res = {"titre": "", "passages": [], "court": [], "raison": ""}
 
+    titre = str(res.get("titre", "")).strip().strip('"')
+    if _generic(titre):
+        titre = _retitle(lines, res.get("passages", []), titre, timeout) or titre
+    res["titre"] = titre
     parts = tighten(_parts(lines, res.get("passages", []), a, b), words, vision)
+    secours = ""
     if not 12 <= total(parts) <= LONG_MAX + 10:        # plan inutilisable : moment repere tel quel
-        parts = tighten([{"start": clip["start"], "end": clip["end"], "zoom": False}], words, vision)
+        secours = f"plan IA inutilisable ({total(parts):.0f} s, passages recus : {res.get('passages')})"
+        raw = [{"start": clip["start"], "end": clip["end"], "zoom": False}]
+        parts = tighten(raw, words, vision)
+        if total(parts) < 12:                           # trop de silences coupes : on garde le moment entier
+            parts = raw
     court = tighten(_parts(lines, res.get("court", []), a, b), words, vision)
     if total(parts) <= SHORT_MAX + 2 or not 12 <= total(court) <= SHORT_MAX + 2:
         court = []
     return {**clip, "start": parts[0]["start"], "end": parts[-1]["end"], "parts": parts, "court_parts": court,
-            "duree": round(total(parts), 1), "titre": str(res.get("titre", "")).strip().strip('"'),
-            "montage": res.get("raison", "")}
+            "duree": round(total(parts), 1), "titre": res["titre"],
+            "montage": res.get("raison", ""), "secours": secours[:400]}
 
 
 def plan_all(clips: list[dict], transcript: dict, duration: float, vision=None, progress=print) -> list[dict]:
@@ -151,7 +211,8 @@ def plan_all(clips: list[dict], transcript: dict, duration: float, vision=None, 
     for i, c in enumerate(clips, 1):
         out.append(plan(c, sents, words, duration, vision))
         o = out[-1]
-        progress(f"  {i}/{len(clips)} {o['duree']:.0f} s en {len(o['parts'])} passages : {o['titre']}")
+        progress(f"  {i}/{len(clips)} {o['duree']:.0f} s en {len(o['parts'])} passages : {o['titre']}"
+                 + (f"  [SECOURS : {o['secours'][:120]}]" if o.get("secours") else ""))
     return out
 
 

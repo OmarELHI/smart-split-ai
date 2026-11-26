@@ -5,8 +5,8 @@ from enum import Enum
 from pathlib import Path
 
 from . import watermark
-from .audio import mix_track
-from .config import BOTTOM_MARGIN, CAM_SHARE, CAM_TOP_RIGHT, GAME_RATIO, OUT_H, OUT_W, TITLE_Y, Rect
+from .audio import audio_tracks, mix_track
+from .config import BOTTOM_MARGIN, CAM_SHARE, CAM_TOP_RIGHT, GAME_RATIO, OUT_H, OUT_W, TITLE_Y, WATERMARK_SIZE, Rect
 
 
 class Scene(str, Enum):
@@ -142,16 +142,25 @@ def _watermark(vf: str, title: str | None = None, zoom: float = 1.0) -> tuple[li
     if zoom > 1.001:
         vf += f";[v]crop=iw/{zoom:.3f}:ih/{zoom:.3f},scale={OUT_W}:{OUT_H},setsar=1[vz]"
         label = "vz"
+    wm_top = None
     if title:
         png = watermark.title_png(title)
         if png is not None:
+            import cv2
+            th = cv2.imread(str(png), cv2.IMREAD_UNCHANGED).shape[0]
+            top = round(OUT_H * TITLE_Y)
             inputs += ["-i", str(png)]
-            vf += f";[{label}][{idx}:v]overlay=(W-w)/2:H*{TITLE_Y}-h/2:format=auto[vt]"
+            vf += f";[{label}][{idx}:v]overlay=(W-w)/2:{top}:format=auto[vt]"
             label, idx = "vt", idx + 1
+            wm_top = top + th - 18 + 6             # bas de la carte du titre (ombre exclue) + petit ecart
     wm = watermark.png()
     if wm is not None:
+        if wm_top is not None:                     # le PNG du texte a des marges : on aligne le haut des lettres
+            import cv2
+            hw = cv2.imread(str(wm), cv2.IMREAD_UNCHANGED).shape[0]
+            wm_top = round(wm_top - (hw / 2 - 0.45 * WATERMARK_SIZE))
         inputs += ["-i", str(wm)]
-        vf = watermark.apply(vf, idx, label_in=label)
+        vf = watermark.apply(vf, idx, label_in=label, top_px=wm_top)
         label = "vw"
     return inputs, vf, f"[{label}]"
 
@@ -160,6 +169,22 @@ def _codec(encoder: str) -> tuple[list[str], list[str]]:
     if encoder == "h264_nvenc":
         return ["-hwaccel", "cuda"], ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"]
     return [], ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]  # repli sans GPU NVIDIA
+
+
+def _audio(src: Path) -> str:
+    """Son du clip, a ajouter au graphe (sortie [aout]).
+    - Plusieurs pistes (OBS multipiste) : le melange est baisse quand Omar parle (compression pilotee par le
+      micro), puis la voix est remise par-dessus : le jeu passe sous la voix.
+    - Une seule piste (voix et jeu melanges) : on ne peut pas separer le jeu, on ecrase seulement ses pics
+      (explosions, musique forte) pour que la voix ressorte mieux."""
+    n = audio_tracks(src)
+    if n >= 2:
+        return (f";[0:a:0]asplit[mic1][mic2];[0:a:{n - 1}][mic1]sidechaincompress=threshold=0.02:ratio=8:"
+                f"attack=15:release=350[duck];[duck][mic2]amix=inputs=2:weights=1 0.6:normalize=0,"
+                f"alimiter=limit=0.95[aout]")
+    if n == 1:
+        return ";[0:a:0]acompressor=threshold=0.08:ratio=4:attack=5:release=250:makeup=1.5,alimiter=limit=0.95[aout]"
+    return ""
 
 
 def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
@@ -189,7 +214,7 @@ def render_clip(src: Path, start: float, end: float, scene: Scene, out: Path,
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src), *wm_in,
-        "-filter_complex", vf, "-map", vout, "-map", f"0:a:{mix_track(src)}?",
+        "-filter_complex", vf + _audio(src), "-map", vout, *(["-map", "[aout]"] if audio_tracks(src) else []),
         *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(out),
     ]
@@ -226,7 +251,7 @@ def render_segments(src: Path, start: float, end: float, pieces: list, out: Path
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         *hw, "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(src), *wm_in,
-        "-filter_complex", graph, "-map", vout, "-map", f"0:a:{mix_track(src)}?",
+        "-filter_complex", graph + _audio(src), "-map", vout, *(["-map", "[aout]"] if audio_tracks(src) else []),
         *venc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(out),
     ]

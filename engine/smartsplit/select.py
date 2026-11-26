@@ -79,7 +79,8 @@ def select(blocks: list[dict], transcript: dict, reactions: dict | None, duratio
         if any(start < c["end"] and c["start"] < end for c in clips):   # pas de chevauchement
             continue
         clips.append({"start": start, "end": end, "note": b["note"], "type": b["type"],
-                      "raison": b["raison"], "score": b["final"], "text": b["text"]})
+                      "raison": b["raison"], "score": b["final"], "text": b["text"],
+                      "evenement": bool(b.get("evenement"))})
     clips.sort(key=lambda c: -c["score"])
     return clips
 

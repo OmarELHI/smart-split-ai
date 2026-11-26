@@ -34,11 +34,15 @@ Regarde CHAQUE image en detail, meme si un element n'apparait que sur une seule 
 - cinematique (cadrage de film, bandes noires, gros plan sur des personnages).
 Puis reponds :
 - action : le type le plus fort vu sur au moins une image, parmi """ + ", ".join(ACTIONS) + """ ;
-- intensite de 0 a 10 pour un clip TikTok : 8 a 10 = fusillade, accident violent, explosion, mort du
-  personnage, course-poursuite, attaque d'animal ou de monstre, scene spectaculaire ;
-  4 a 7 = action moderee ou tres beau paysage ; 0 a 3 = conduite calme, marche, menu, dialogue ;
+- intensite de 0 a 10 pour un clip TikTok. La plupart des passages d'un stream sont calmes : sois severe.
+  8 a 10 = seulement si l'evenement violent est CLAIREMENT visible sur une image (coups de feu, voiture qui
+  en percute une autre, explosion, personnage mort, animal ou monstre qui attaque, police qui poursuit) ;
+  4 a 7 = action moderee (conduite rapide, combat leger) ou tres beau paysage ;
+  0 a 3 = conduite normale, marche, menu, discussion, cinematique calme. Dans le doute, mets moins ;
 - description : une phrase courte et concrete en francais (15 mots maximum), qui cite l'element le plus
-  marquant (ex. "Un alligator attaque le personnage dans le marais").
+  marquant (ex. "Un alligator attaque le personnage dans le marais") ;
+- mission : le nom de la mission en cours, ecrit en rose en bas a droite de l'ecran, recopie exactement.
+  Chaine vide si aucun nom de mission n'est affiche.
 Reponds uniquement en JSON."""
 
 VISION_FRAMES = 4    # images par fenetre de 30 s pour le passage general (reduites en VISION_SIZE)
@@ -52,8 +56,9 @@ SCHEMA = {
         "action": {"type": "string", "enum": ACTIONS},
         "intensite": {"type": "integer"},
         "description": {"type": "string"},
+        "mission": {"type": "string"},
     },
-    "required": ["action", "intensite", "description"],
+    "required": ["action", "intensite", "description", "mission"],
 }
 
 
@@ -104,12 +109,13 @@ def _jpg(path: Path, small: bool = True) -> bytes:
     return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tobytes()
 
 
-def _mosaic(paths: list[Path]) -> bytes:
+def _mosaic(paths: list[Path], size: tuple[int, int] = (640, 360)) -> bytes:
+    """Une seule image pour le modele : bien plus rapide que plusieurs images separees (1 s au lieu de 2,7 s)."""
     imgs = [cv2.imread(str(p)) for p in paths]
-    imgs = [cv2.resize(i, (640, 360)) for i in imgs if i is not None]
+    imgs = [cv2.resize(i, size, interpolation=cv2.INTER_AREA) for i in imgs if i is not None]
     cols = 3 if len(imgs) > 4 else 2
     while len(imgs) % cols or len(imgs) < cols * 2:
-        imgs.append(np.zeros((360, 640, 3), np.uint8))
+        imgs.append(np.zeros((size[1], size[0], 3), np.uint8))
     rows = [cv2.hconcat(imgs[i:i + cols]) for i in range(0, len(imgs), cols)]
     return cv2.imencode(".jpg", cv2.vconcat(rows), [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tobytes()
 
@@ -137,7 +143,7 @@ def describe(paths: list[Path], timeout: float = 120, small: bool = True) -> dic
     global _MULTI_OK
     prompt = PROMPT.replace("{n}", str(len(paths)))
     res = None
-    if _MULTI_OK and len(paths) > 1:
+    if _MULTI_OK and len(paths) > 1 and not small:   # images separees : seulement pour l'examen de pres
         try:
             res = _post(prompt, [_jpg(p, small) for p in paths], timeout)
         except RuntimeError as e:
@@ -147,7 +153,7 @@ def describe(paths: list[Path], timeout: float = 120, small: bool = True) -> dic
             print(f"  [plusieurs images refusees ({e}) : passage a une mosaique]")
     if res is None:
         res = _post(prompt + "\nLes images sont assemblees en une mosaique, a lire de gauche a droite puis de haut en bas.",
-                    [_mosaic(paths)], timeout)
+                    [_mosaic(paths, VISION_SIZE if small else (640, 360))], timeout)
     res["intensite"] = max(0, min(10, int(res.get("intensite", 0))))
     return res
 
@@ -282,3 +288,37 @@ def action_blocks(wins: list[dict], min_intensity: int = 7) -> list[dict]:
             out.append({"start": w["start"], "end": w["end"], "note": min(w["intensite"], 8), "type": "action",
                         "raison": f"A l'ecran : {w['description']} ({w['action']})", "text": "", "vision": True})
     return out
+
+
+STRONG = ("accident", "explosion", "fusillade", "mort", "monstre", "animal", "cascade")
+
+
+def reaction_events(wins: list[dict], rx: dict | None, before: float = 25.0, after: float = 8.0) -> list[dict]:
+    """Un evenement fort vu a l'ecran (accident, explosion, monstre...) suivi d'une reaction d'Omar dans les
+    secondes qui suivent = un moment a clipper, meme si ce qu'il dit est court ("oh !", "non !") et a ete mal
+    note sur la transcription. On garde ce qui precede (le contexte, ex. "je me suis habitue a la conduite")."""
+    if not wins or not rx:
+        return []
+    peaks = rx.get("peaks", [])
+    out = []
+    for w in wins:
+        strong = (w["action"] in STRONG and w["intensite"] >= 8) or (w["action"] == "poursuite" and w["intensite"] >= 9)
+        if not strong:
+            continue
+        near = [p for p in peaks if w["start"] - 2 <= p["t"] <= w["end"] + 6]
+        if not near:
+            continue
+        p = max(near, key=lambda p: p["score"])
+        out.append({"start": round(max(0.0, p["t"] - before), 2), "end": round(p["t"] + after, 2),
+                    "note": 9 if w.get("focus") else 8, "type": "reaction", "evenement": True,
+                    "raison": f"A l'ecran : {w['description']} ({w['action']}), suivi d'une reaction d'Omar",
+                    "text": ""})
+    out.sort(key=lambda b: b["start"])
+    merged = []
+    for b in out:                                   # evenements proches : un seul moment
+        if merged and b["start"] < merged[-1]["end"]:
+            merged[-1]["end"] = max(merged[-1]["end"], b["end"])
+            merged[-1]["note"] = max(merged[-1]["note"], b["note"])
+        else:
+            merged.append(b)
+    return merged

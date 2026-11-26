@@ -231,6 +231,12 @@ const fmtT = t => { t = Math.max(0, Math.round(t || 0)); const h = Math.floor(t 
 const fmtDur = s => { s = Math.round(s || 0); if (s < 60) return `${s} s`; const m = Math.floor(s / 60);
   return m < 60 ? `${m} min ${String(s % 60).padStart(2, "0")}` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`; };
 const fmtSize = b => b > 1e9 ? (b / 1e9).toFixed(1).replace(".", ",") + " Go" : Math.round(b / 1e6) + " Mo";
+const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+// "2026-11-18 23-35-18.mp4" -> "Stream du : 18 Novembre" (affichage seulement, les fichiers gardent leur nom)
+const parseRec = n => { const m = String(n || "").match(/(\d{4})-(\d{2})-(\d{2})[ _T](\d{2})-(\d{2})/); return m && {y: +m[1], mo: +m[2], d: +m[3], h: m[4], mi: m[5]}; };
+const streamName = n => { const r = parseRec(n); if (!r) return n;
+  return `Stream du : ${r.d} ${MOIS[r.mo - 1]}${r.y !== new Date().getFullYear() ? " " + r.y : ""}`; };
+const streamHour = n => { const r = parseRec(n); return r ? `début à ${+r.h} h ${r.mi}` : ""; };
 const fmtDate = t => new Date(t * 1000).toLocaleString("fr-FR", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"});
 
 async function api(path, body) {
@@ -266,7 +272,7 @@ async function loadVods() {
     if (!vods.length) { box.innerHTML = `<div class="empty">Aucune vidéo dans ce dossier.</div>`; renderSel(); return; }
     box.innerHTML = vods.map((v, i) => `<div class="vod ${selected.has(v.path) ? "sel" : ""}" data-i="${i}">
       <input type="checkbox" ${selected.has(v.path) ? "checked" : ""} tabindex="-1">
-      <div><div class="name">${esc(v.name)}</div><div class="meta">${fmtSize(v.size)} · ${fmtDate(v.mtime)}</div></div>
+      <div><div class="name" title="${esc(v.name)}">${esc(streamName(v.name))}</div><div class="meta">${parseRec(v.name) ? streamHour(v.name) + " · " : ""}${fmtSize(v.size)}${parseRec(v.name) ? "" : " · " + fmtDate(v.mtime)}</div></div>
       ${v.traite ? `<span class="tag ok">Traité · ${v.clips} moments</span>` : `<span class="tag">Nouveau</span>`}</div>`).join("");
     box.querySelectorAll(".vod").forEach(el => el.onclick = () => {
       const p = vods[+el.dataset.i].path; selected.has(p) ? selected.delete(p) : selected.add(p); loadVodsSoft(); });
@@ -312,10 +318,11 @@ function jobCard(j) {
   const tag = {en_cours: "pink", termine: "ok", erreur: "bad"}[j.status] || "";
   const steps = PHASES.filter(p => !(j.no_render && p === "rendu"));
   return `<div class="job" data-id="${j.id}">
-    <div class="title"><b title="${esc(j.src)}">${esc(j.name)}</b><span class="tag ${tag}">${STATUS_LBL[j.status]}</span>
+    <div class="title"><b title="${esc(j.src)}">${esc(streamName(j.name))}</b>${parseRec(j.name) ? `<span class="small dim">${streamHour(j.name)}</span>` : ""}<span class="tag ${tag}">${STATUS_LBL[j.status]}</span>
       ${j.status !== "attente" ? `<span class="small dim">${fmtDur(el)}</span>` : ""}<span class="spacer"></span>
       ${j.status === "termine" ? `<button class="btn small primary" data-act="see">Voir les clips</button>` : ""}
       ${["attente", "en_cours"].includes(j.status) ? `<button class="btn small bad" data-act="cancel">Annuler</button>` : ""}
+      <button class="btn small ghost" data-act="copy" title="Copie tout le journal dans le presse-papiers">Copier le journal</button>
       <button class="btn small ghost" data-act="log">${openLogs.has(j.id) ? "Masquer" : "Journal"}</button></div>
     ${j.status === "attente" ? "" : `<div class="bar"><i style="width:${pct}%"></i></div>
     <div class="steps" style="grid-template-columns:repeat(${steps.length},1fr)">${steps.map(p => `<div class="step ${j.phases[p].etat}">${PHASE_LBL[p]}</div>`).join("")}</div>`}
@@ -334,10 +341,24 @@ function renderJobs(js) {
     const id = card.dataset.id, j = js.find(x => x.id === id);
     if (b.dataset.act === "cancel") { if (confirm("Arrêter ce traitement ? Les étapes terminées restent en cache.")) { await api("/api/jobs/cancel", {id}); poll(); } }
     if (b.dataset.act === "see") { currentStem = j.stem; show("clips"); }
+    if (b.dataset.act === "copy") copyLog(j);
     if (b.dataset.act === "log") { if (openLogs.has(id)) openLogs.delete(id); else { openLogs.set(id, {since: 0, lines: []}); await fetchLog(id); } renderJobs(jobsCache); }
   }));
   const active = js.filter(j => ["attente", "en_cours"].includes(j.status)).length;
   $("#nav-jobs").hidden = !active; $("#nav-jobs").textContent = active;
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select(); const ok = document.execCommand("copy"); ta.remove(); return ok;
+}
+async function copyLog(j) {
+  try {
+    const d = await api(`/api/job?id=${j.id}&since=0`);   // tout le journal, meme s'il n'est pas affiche
+    const head = [`${streamName(j.name)} (${j.src})`, `Statut : ${STATUS_LBL[d.status]}${d.error ? " : " + d.error : ""}`, ""];
+    const ok = await copyText(head.concat(d.log).join("\n"));
+    toast(ok ? `Journal copié (${d.log.length} lignes)` : "Copie impossible : sélectionne le texte du journal à la main", !ok);
+  } catch (e) { toast(e.message, true); }
 }
 async function fetchLog(id) {
   const L = openLogs.get(id); if (!L) return;
@@ -355,7 +376,7 @@ async function poll() {
     $("#learn-txt").textContent = `${d.feedback.publies} publiés · ${d.feedback.rejetes} rejetés appris`;
     feedbackStats = d.feedback;
     for (const j of d.jobs) {
-      if (lastStatuses[j.id] && lastStatuses[j.id] !== j.status && j.status === "termine") { toast(`${j.name} : clips prêts`); if (view === "clips") loadStreams(); }
+      if (lastStatuses[j.id] && lastStatuses[j.id] !== j.status && j.status === "termine") { toast(`${streamName(j.name)} : clips prêts`); if (view === "clips") loadStreams(); }
       lastStatuses[j.id] = j.status;
     }
   } catch { $("#ollama-txt").textContent = "Serveur arrêté : relance l'application"; $("#ollama-dot").className = "dot"; }
@@ -372,8 +393,8 @@ async function loadStreams() {
     const todo = streams.reduce((a, s) => a + Math.max(0, s.rendus - s.publies - s.rejetes), 0);
     $("#nav-todo").hidden = !todo; $("#nav-todo").textContent = todo;
     $("#streams").innerHTML = streams.length ? streams.map(s => `<div class="stream ${s.stem === currentStem ? "sel" : ""}" data-stem="${esc(s.stem)}">
-      <div class="n">${esc(s.stem)}</div>
-      <div class="m">${s.duration ? fmtDur(s.duration) + " · " : ""}${s.rendus} rendus / ${s.moments} moments</div>
+      <div class="n" title="${esc(s.stem)}">${esc(streamName(s.stem))}</div>
+      <div class="m">${parseRec(s.stem) ? streamHour(s.stem) + " · " : ""}${s.duration ? fmtDur(s.duration) + " · " : ""}${s.rendus} rendus / ${s.moments} moments</div>
       <div class="m">${s.publies ? `<span class="tag ok">${s.publies} publiés</span> ` : ""}${s.rejetes ? `<span class="tag bad">${s.rejetes} rejetés</span>` : ""}${!s.complet ? `<span class="tag">incomplet</span>` : ""}</div>
     </div>`).join("") : `<div class="empty card">Aucun stream traité.</div>`;
     document.querySelectorAll(".stream").forEach(el => el.onclick = () => { currentStem = el.dataset.stem; loadStreams(); });
@@ -512,6 +533,8 @@ document.addEventListener("keydown", e => {
 /* ---------- Réglages ---------- */
 const ENGINE_FIELDS = [
   ["WATERMARK", "Texte publicitaire", "Affiché pendant tout le clip. Vide = aucun texte.", "text"],
+  ["WATERMARK_OPACITY", "Opacité du texte publicitaire", "1 = opaque, 0,6 = semi-transparent, 0 = invisible.", "num", 0.05],
+  ["WATERMARK_Y", "Position du texte publicitaire", "Hauteur du centre, en part de l'écran : 0,15 = sous le titre, 0,5 = milieu.", "num", 0.01],
   ["TITLE", "Titre d'accroche", "Bandeau écrit par l'IA en haut de chaque clip.", "bool"],
   ["ZOOM", "Zoom sur les réactions", "1 = aucun zoom, 1,12 = zoom léger.", "num", 0.01],
   ["SHORT_MAX", "Durée max d'un avis ou d'une réaction (s)", "Au-delà, une version courte est rendue en plus.", "num", 1],
@@ -520,6 +543,9 @@ const ENGINE_FIELDS = [
   ["RUSH_BEFORE", "Rush avant le moment (s)", "Ce que l'IA de montage peut reprendre avant le moment repéré.", "num", 1],
   ["RUSH_AFTER", "Rush après le moment (s)", "Et après.", "num", 1],
   ["VISION", "Vision IA", "L'IA regarde l'écran (fusillades, accidents...). Plus lent, mais repère l'action sans paroles.", "bool"],
+  ["CAM_BONUS", "Priorité aux clips avec ta cam", "Bonus de score quand ta cam est visible pendant tout le clip (0 = aucun, 0,15 par défaut).", "num", 0.05],
+  ["TREND_GAME", "Jeu suivi pour les tendances", "Les Shorts YouTube et TikTok qui marchent autour de ce jeu orientent le choix des clips.", "text"],
+  ["VISION_CLIPS", "Clips sur l'action seule", "Créer des clips quand l'IA voit de l'action, même sans réaction de ta part (désactivé : trop de faux positifs).", "bool"],
   ["VISION_MIN", "Intensité d'action minimale (0 à 10)", "À partir de laquelle une action devient un clip, même sans paroles.", "num", 1],
   ["PROMPT_CONTEXT", "Contexte donné à l'IA", "Personnes, jeux, habitudes du stream.", "area"],
 ];

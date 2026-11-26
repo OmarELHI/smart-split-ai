@@ -102,7 +102,19 @@ def blocks(transcript: dict, block_s: float = BLOCK_S) -> list[dict]:
 
 
 FEEDBACK_FILE = DATA / "feedback.json"     # ecrit par l'application : clips publies ou rejetes (avec raison)
-FEEDBACK_MAX = 8                            # exemples de chaque sorte donnes a l'IA (les plus recents)
+FEEDBACK_MAX = 15                           # exemples de chaque sorte donnes a l'IA (les plus recents)
+
+# Raisons techniques (rendu) : l'IA ne peut rien y faire, elles sont retirees des exemples qu'on lui donne
+_TECH = ("cadr", "rogn", "camera", "caméra", "texte", "son du jeu", "son ", "flou", "watermark", "bout de",
+         "derriere", "derrière", "mal place la cam", "zoom")
+
+
+def _content_reason(raison: str) -> str:
+    """Garde seulement les parties de la raison qui portent sur le contenu (moment, coupes, titre)."""
+    import re
+    parts = [p.strip(" .") for p in re.split(r",|;|\. | et ", raison) if p.strip(" .")]
+    keep = [p for p in parts if not any(t in p.lower() for t in _TECH) or "titre" in p.lower() and "rogn" not in p.lower()]
+    return ", ".join(keep)
 
 
 def _feedback_examples() -> tuple[list[str], list[str]]:
@@ -119,8 +131,14 @@ def _feedback_examples() -> tuple[list[str], list[str]]:
         return f"{f.get('type', 'clip')} ({float(f.get('duree') or 0):.0f} s) : \"{t}\""
 
     pub = [desc(f) + " (publie)" for f in items if f.get("decision") == "publie"][-FEEDBACK_MAX:]
-    rej = [f"{desc(f)} -> rejete : {f['raison']}" for f in items
-           if f.get("decision") == "rejete" and f.get("raison")][-FEEDBACK_MAX:]
+    rej = []
+    for f in items:
+        if f.get("decision") == "rejete" and f.get("raison"):
+            r = _content_reason(f["raison"])
+            if r:
+                titre = f" (titre propose : \"{f['titre']}\")" if f.get("titre") and "titre" in r.lower() else ""
+                rej.append(f"{desc(f)}{titre} -> rejete : {r}")
+    rej = rej[-FEEDBACK_MAX:]
     return pub, rej
 
 
@@ -134,6 +152,11 @@ def _context_suffix() -> str:
     if rej:
         out += "\n\nClips qu'Omar a rejetes, avec sa raison (evite ces erreurs) :\n" + \
                "\n".join(f"- {e}" for e in rej)
+    try:
+        from .trends import prompt_text
+        out += prompt_text()
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
@@ -149,14 +172,35 @@ def _chat(messages: list[dict], timeout: float = 300) -> dict:
         return json.loads(r.read())
 
 
-def unload(model: str | None = None) -> None:
-    """Libere la memoire du GPU (utile avant le rendu ou Whisper)."""
+def loaded() -> list[str]:
+    """Modeles actuellement charges dans Ollama."""
     try:
-        body = json.dumps({"model": model or LLM_MODEL, "keep_alive": 0}).encode()
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=5) as r:
+            return [m["name"] for m in json.loads(r.read()).get("models", [])]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def unload(model: str | None = None, wait: float = 30) -> None:
+    """Libere la memoire du GPU et attend que le modele soit vraiment decharge : deux modeles ensemble
+    ne tiennent pas dans les 12 Go, et le second deborderait sur le processeur (100 fois plus lent)."""
+    name = model or LLM_MODEL
+    try:
+        body = json.dumps({"model": name, "keep_alive": 0}).encode()
         urllib.request.urlopen(urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
                                                       headers={"Content-Type": "application/json"}), timeout=30)
     except Exception:  # noqa: BLE001
         pass
+    t0 = time.time()
+    while time.time() - t0 < wait and any(m.split(":")[0] == name.split(":")[0] for m in loaded()):
+        time.sleep(1)
+
+
+def only(model: str) -> None:
+    """Decharge tous les autres modeles avant d'utiliser celui-ci."""
+    for m in loaded():
+        if m.split(":")[0] != model.split(":")[0]:
+            unload(m)
 
 
 def _alive() -> bool:
@@ -204,7 +248,9 @@ def score(transcript: dict, progress=print, vision: list[dict] | None = None) ->
         from .vision import screen_text
         for b in bl:
             b["ecran"] = screen_text(vision, b["start"], b["end"])
+    only(LLM_MODEL)
     results: dict[int, dict] = {}
+    fails = 0
     todo = [b for b in bl if len(b["text"].split()) >= 4]          # trop court : note 0 d'office
     for i in range(0, len(todo), BATCH):
         batch = todo[i:i + BATCH]
@@ -214,8 +260,13 @@ def score(transcript: dict, progress=print, vision: list[dict] | None = None) ->
             res = _chat([{"role": "system", "content": system_prompt()}, {"role": "user", "content": user}])
             for e in json.loads(res["message"]["content"]).get("extraits", []):
                 results[int(e["id"])] = e
+            fails = 0
         except Exception as e:  # noqa: BLE001
             progress(f"  [paquet {i // BATCH + 1} ignore : {e}]")
+            fails += 1
+            if fails >= 2:
+                raise RuntimeError(f"la notation ne repond plus ({e}). Modeles charges : {', '.join(loaded()) or 'aucun'}. "
+                                   "Verifie avec \"ollama ps\" que gemma3 est a 100 % GPU.") from e
         progress(f"  notation : {min(i + BATCH, len(todo))}/{len(todo)} extraits ({time.time() - t0:.0f} s)")
     for b in bl:
         e = results.get(b["id"], {})

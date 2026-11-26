@@ -19,9 +19,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from smartsplit import edit, llm, reactions, scenes, transcribe, vision
+from smartsplit import edit, llm, missions, reactions, scenes, transcribe, trends, vision
 from smartsplit.audio import load_audio
-from smartsplit.config import OUTPUT, VISION, VISION_MIN, VISION_MODEL
+from smartsplit.config import CAM_BONUS, MISSION_RECAPS, OUTPUT, VISION, VISION_CLIPS, VISION_MIN, VISION_MODEL
 from smartsplit.select import select
 
 PHASES = ["scenes", "transcription", "reactions", "vision", "notation", "choix", "montage", "rendu"]
@@ -135,7 +135,13 @@ def main() -> None:
         strong = sum(1 for w in vis if w["intensite"] >= VISION_MIN)
         print(f"[vision] {len(vis)} fenetres decrites, {strong} actions fortes ({times['vision']:.0f} s)")
 
-    # 5. Notation par l'IA (GPU, Ollama)
+    # 5. Tendances TikTok / YouTube Shorts autour du jeu (mises a jour tous les quelques jours)
+    try:
+        trends.update(progress=lambda m: print(f"[tendances] {m.strip()}"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[tendances] mise a jour impossible ({e}) : on continue sans")
+
+    # 6. Notation par l'IA (GPU, Ollama)
     t0 = time.time()
     sc = None if "notation" in redo else llm.load(src)
     if sc is not None and VISION and not sc.get("vision"):
@@ -151,9 +157,20 @@ def main() -> None:
 
     # 5. Choix des clips
     t0 = time.time()
-    cand = sc["blocks"] + (vision.action_blocks(vis, VISION_MIN) if vis else [])
+    cand = sc["blocks"] + (vision.action_blocks(vis, VISION_MIN) if vis and VISION_CLIPS else [])
+    events = vision.reaction_events(vis, rx) if vis else []      # evenement a l'ecran + ta reaction
+    cand += events
+    if events:
+        print(f"[choix] {len(events)} evenements a l'ecran suivis d'une reaction")
     cand.sort(key=lambda b: b["start"])
     clips = select(cand, tr, rx, tr["duration"])
+    for c in clips:                        # priorite aux clips ou ta cam est visible
+        seg = scenes.segments_for(an, c["start"], c["end"])
+        cam = sum(min(e1, c["end"]) - max(s1, c["start"]) for s1, e1, sc_, _ in seg if sc_ in ("cam_jeu", "full_cam"))
+        c["cam"] = round(cam / max(1e-6, c["end"] - c["start"]), 2)
+        # un evenement a l'ecran se passe souvent en jeu seul : meme bonus que la cam, pour ne pas le defavoriser
+        c["score"] = round(c["score"] + CAM_BONUS * (1.0 if c.get("evenement") else c["cam"]), 4)
+    clips.sort(key=lambda c: -c["score"])
     (work / "clips.json").write_text(json.dumps(clips, ensure_ascii=False, indent=1), encoding="utf-8")
     times["choix"] = time.time() - t0
     print(f"[choix] {len(clips)} clips proposes")
@@ -166,15 +183,31 @@ def main() -> None:
     if cached and all("parts" in c for c in cached) and not ({"montage", "choix", "notation"} & redo):
         clips = cached
     else:
+        clips = [{**c, "parts": [{"start": c["start"], "end": c["end"], "zoom": False}], "monte": False}
+                 for c in sorted(clips, key=lambda c: -c["score"])]
+    # seuls les meilleurs moments sont montes par l'IA (2 fois le nombre de clips a rendre) : le reste
+    # le sera a la demande (bouton "Rendre 10 de plus" de l'application)
+    limit = args.max * 2 if args.max else len(clips)
+    todo_plan = [i for i, c in enumerate(clips[:limit]) if c.get("monte") is False]
+    if todo_plan:
         llm.check()
-        clips = edit.plan_all(clips, tr, tr["duration"], vision=vis,
-                              progress=lambda m: print(f"[montage] {m.strip()}"))
+        planned = edit.plan_all([clips[i] for i in todo_plan], tr, tr["duration"], vision=vis,
+                                progress=lambda m: print(f"[montage] {m.strip()}"))
+        for i, c in zip(todo_plan, planned):
+            clips[i] = {**c, "monte": True}
         kept: list[dict] = []
-        for c in sorted(clips, key=lambda c: -c["score"]):          # supprime les chevauchements crees
+        for c in clips:                    # supprime les chevauchements crees par le montage
             if not any(c["start"] < k["end"] and k["start"] < c["end"] for k in kept):
                 kept.append(c)
         clips = kept
         mpath.write_text(json.dumps(clips, ensure_ascii=False, indent=1), encoding="utf-8")
+    # resumes de missions (ajoutes apres les clips, toujours rendus)
+    clips = [c for c in clips if c.get("type") != "resume"]
+    if MISSION_RECAPS and vis:
+        rec = missions.recaps(vis, sc["blocks"], events, tr["duration"])
+        clips += rec
+        mpath.write_text(json.dumps(clips, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"[montage] {len(rec)} resumes de missions : " + ", ".join(r["titre"] for r in rec))
     llm.unload()                           # libere le GPU pour le rendu
     times["montage"] = time.time() - t0
     print(f"[montage] {len(clips)} clips ({times['montage']:.0f} s)")
@@ -186,7 +219,9 @@ def main() -> None:
         out_dir = OUTPUT / src.stem
         out_dir.mkdir(parents=True, exist_ok=True)
         todo = clips[: args.max] if args.max else clips
-        for i, c in enumerate(todo, 1):
+        todo += [c for c in clips if c.get("type") == "resume" and c not in todo]
+        for c in todo:
+            i = clips.index(c) + 1
             st = int(c["start"])
             base = f"clip{i:02d}_{st // 60:02d}m{st % 60:02d}s_note{c['note']}"
             versions = [(base, c["parts"])]
